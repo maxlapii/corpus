@@ -390,7 +390,9 @@ deliberately rather than retrieved: an author with `faq.manage` decides what can
 Behaviour worth knowing when reasoning about a reply:
 
 - Only `ACTIVE`, in-date answers are served. A `DRAFT` is invisible to both bots, which makes the
-  draft state a genuine review step.
+  draft state a genuine review step — and is the first thing to check when a newly authored answer
+  "does not apply": the form saves a draft unless the status is set to ACTIVE, and the dashboard
+  now says so on save and offers a **Publish it now** button.
 - A match must clear a relevance threshold (≥ 0.67 stem coverage, ≥ 2 matching stems). Below it the
   bot falls through to its normal tools, so an adjacent question is not answered with the wrong
   approved text.

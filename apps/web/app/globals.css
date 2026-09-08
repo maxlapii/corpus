@@ -230,6 +230,7 @@ td.mono, .mono { font-family: var(--mono); font-size: 12px; }
 .notice { border-radius: var(--radius); padding: 12px 14px; border: 1px solid; margin-bottom: 16px; }
 .notice.error { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
 .notice.warn { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); }
+.notice.ok { background: var(--ok-soft); border-color: var(--ok); color: var(--ok); }
 .notice.info { background: var(--info-soft); border-color: var(--accent); color: var(--accent); }
 
 .skeleton {

@@ -130,6 +130,35 @@ describe('E2E: bot training', () => {
     expect(answered.body.reply).toContain('three months of unpaid sabbatical')
   })
 
+  it('a new answer defaults to DRAFT, and a DRAFT is never served', async () => {
+    const hr = await h.login(seedEmail(h.seed, 'hr'))
+
+    // The dashboard form omits `status` on a plain save, so this is exactly
+    // what "I filled the form and the bot ignored it" looks like.
+    const created = await hr.post('/knowledge/answers', {
+      question: 'What is the cycle-to-work allowance?',
+      answer: 'The allowance is reimbursed once per calendar year.',
+      audience: 'BOTH',
+      classification: 'PUBLIC',
+    })
+    expect(created.status).toBe(201)
+    expect(created.body.answer.status).toBe('DRAFT')
+
+    const whileDraft = await hr.post('/knowledge/answers/preview', {
+      question: 'What is the cycle-to-work allowance?',
+      audience: 'EXTERNAL',
+    })
+    expect(whileDraft.body.matches).toHaveLength(0)
+
+    await hr.post(`/knowledge/answers/${created.body.answer.id}/status`, { status: 'ACTIVE' })
+
+    const published = await hr.post('/knowledge/answers/preview', {
+      question: 'What is the cycle-to-work allowance?',
+      audience: 'EXTERNAL',
+    })
+    expect(published.body.matches[0]?.wouldServe).toBe(true)
+  })
+
   it('the preview shows an author what each bot would say, without publishing', async () => {
     const hr = await h.login(seedEmail(h.seed, 'hr'))
     await hr.post('/knowledge/answers', {

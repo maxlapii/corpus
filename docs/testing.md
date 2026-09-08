@@ -19,7 +19,7 @@ SQL engine. Only the LLM and outbound Telegram HTTP are substituted.
 | Runner | Vitest 2 (`vitest.config.ts`) |
 | Environment | `node`, `pool: 'forks'`, 20 s test/hook timeout |
 | Discovery | `tests/**/*.test.ts` — 25 files |
-| Total tests | 583, all passing |
+| Total tests | 584, all passing |
 | Database under test | `better-sqlite3`, in-memory, real migrations from `migrations/` |
 | LLM under test | `MockAIProvider` (`packages/ai/src/providers/mock.ts`) — no API key needed |
 | Coverage provider | v8, configured but not wired into CI (`npx vitest run --coverage`) |
@@ -99,10 +99,11 @@ on a clean checkout.
 | `docs-consistency.test.ts` | 6 | Guards this document and the rest against mechanical drift: every CLAUDE.md §48 file exists; every npm script is documented somewhere; every configuration key `config.ts` reads appears in `.env.example`; every test file is listed in this inventory; every AI provider the factory can build is described in `docs/ai.md` and `.env.example`; every wrangler binding the container expects is documented in `docs/deployment.md`. When it fails, update the docs — do not relax the assertion |
 | `ai-providers.test.ts` | 29 | Provider selection (binding-authenticated providers need no API key; `workers-ai` in production raises no `AI_API_KEY` error; Google still does; mock refused in production; unknown names fall back to mock); `WorkersAiProvider` request shape, tool advertising in the flat Workers AI format, tool-call parsing in both the native and OpenAI shapes, malformed calls dropped, unexpected response shapes tolerated, quota failures marked retryable, timeout enforcement; `GoogleProvider` key-in-header (never the URL), role mapping, JSON mode, schema-keyword stripping, and no provider body leaked on an HTTP error |
 
-### `tests/e2e` — 20 tests
+### `tests/e2e` — 21 tests
 
-`tests/e2e/bot-training-flow.test.ts` (5) covers the training loop end to end: HR publishes an
-answer and the external bot serves it verbatim while a DRAFT is not served; an unanswered internal
+`tests/e2e/bot-training-flow.test.ts` (6) covers the training loop end to end: HR publishes an
+answer and the external bot serves it verbatim while a DRAFT is not served; a new answer defaults to
+DRAFT and stays unserved until published; an unanswered internal
 question reaches the backlog, is answered, links back to the source question and leaves the open
 backlog; the preview shows what each bot would say without publishing; editing an answer changes the
 next reply; and a served answer is recorded against the conversation.

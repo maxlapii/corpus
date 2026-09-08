@@ -444,7 +444,7 @@ On the internal bot, an unlinked Telegram id reaches `AIOrchestrator.answerFromC
 
 Injection-shaped text inside a curated answer is logged, not stripped: there is no model turn for it to hijack, and a holder of `faq.manage` approved it. Figures inside a served answer are passed to the response filter as `groundedNumbers`, because a human approved them — otherwise the filter would redact the very numbers HR published.
 
-Proof: `tests/security/bot-training.test.ts` (40), `tests/unit/answer-flow.test.ts` (21), `tests/e2e/bot-training-flow.test.ts` (5).
+Proof: `tests/security/bot-training.test.ts` (40), `tests/unit/answer-flow.test.ts` (21), `tests/e2e/bot-training-flow.test.ts` (6).
 
 ---
 
@@ -584,7 +584,7 @@ Local results on 2026-09-07: `npx vitest run tests/security` → 3 files, 157 te
 | 19 | Input validation exists | `packages/shared/src/validate.ts`; `middleware/body.ts`; tool validators | `tests/unit/misc-units.test.ts` "validation"; `tests/unit/tool-registry.test.ts` "rejects invalid arguments before the handler runs"; `rate-limiting.test.ts` "rejects an oversized request body" |
 | 20 | Production state is not stored on local filesystem | D1 + R2 via `StorageService`; per-request container; memory fallbacks reported by `/health` | `tests/integration/repositories.test.ts`; `/health` `documentStorage` field |
 | 21 | Database migrations work | `migrations/*.sql`, `packages/db/src/migrations.ts` | `tests/integration/schema.test.ts` "applies all migrations exactly once", "enforces foreign keys" |
-| 22 | CI passes | `.github/workflows/ci.yml` (secret scan → lint → typecheck → unit → integration → security → e2e → RBAC drift → build) | Full suite passed locally on 2026-09-09 (583 tests). The GitHub Actions run itself must be confirmed in the repository's Actions tab. |
+| 22 | CI passes | `.github/workflows/ci.yml` (secret scan → lint → typecheck → unit → integration → security → e2e → RBAC drift → build) | Full suite passed locally on 2026-09-09 (584 tests). The GitHub Actions run itself must be confirmed in the repository's Actions tab. |
 | 23 | Security tests pass | `tests/security/*.test.ts` | `npm run test:security` → 245 passed (2026-09-09) |
 
 ---

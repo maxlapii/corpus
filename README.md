@@ -431,11 +431,11 @@ builds for Pages with `npm run pages:build --workspace @corpus/web` and deploys 
 ## Testing
 
 ```bash
-npm test                   # all 583 tests (vitest run)
+npm test                   # all 584 tests (vitest run)
 npm run test:unit          # tests/unit        — 242 tests
 npm run test:integration   # tests/integration —  76 tests
 npm run test:security      # tests/security    — 245 tests
-npm run test:e2e           # tests/e2e         —  20 tests
+npm run test:e2e           # tests/e2e         —  21 tests
 npm run test:watch         # vitest in watch mode
 
 npm run lint               # eslint, zero warnings tolerated

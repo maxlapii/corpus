@@ -165,6 +165,8 @@ export default function TrainingPage() {
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<unknown>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  /** Set when the last save produced something the bots will not serve yet. */
+  const [unpublished, setUnpublished] = useState<CuratedAnswer | null>(null)
 
   const reloadAll = useCallback(() => {
     answers.reload()
@@ -220,6 +222,7 @@ export default function TrainingPage() {
     setSubmitting(true)
     setSubmitError(null)
     setNotice(null)
+    setUnpublished(null)
 
     const body: Record<string, unknown> = {
       question: draft.question.trim(),
@@ -250,7 +253,13 @@ export default function TrainingPage() {
         })
       }
 
-      setNotice(draft.id ? 'Answer updated.' : 'Answer created.')
+      const live = saved.answer.status === 'ACTIVE'
+      setNotice(
+        live
+          ? `Saved and live. The ${saved.answer.audience.toLowerCase()} bot will answer with this now.`
+          : `Saved as ${saved.answer.status}. The bots will NOT answer with it until it is published.`,
+      )
+      setUnpublished(live ? null : saved.answer)
       setDraft(emptyDraft())
       reloadAll()
     } catch (e) {
@@ -265,7 +274,12 @@ export default function TrainingPage() {
     setNotice(null)
     try {
       await api(`/knowledge/answers/${answer.id}/status`, { method: 'POST', body: { status } })
-      setNotice(`"${answer.question}" is now ${status}.`)
+      setNotice(
+        status === 'ACTIVE'
+          ? `"${answer.question}" is live. The bots will answer with it now.`
+          : `"${answer.question}" is now ${status}.`,
+      )
+      setUnpublished(null)
       reloadAll()
     } catch (e) {
       setSubmitError(e)
@@ -302,8 +316,25 @@ export default function TrainingPage() {
       />
 
       {notice ? (
-        <div className="notice success" role="status" style={{ marginBottom: 14 }}>
+        <div
+          className={unpublished ? 'notice warn' : 'notice ok'}
+          role="status"
+          style={{ marginBottom: 14 }}
+        >
           {notice}
+          {unpublished ? (
+            <>
+              {' '}
+              <button
+                type="button"
+                className="primary"
+                style={{ marginLeft: 8 }}
+                onClick={() => changeStatus(unpublished, 'ACTIVE')}
+              >
+                Publish it now
+              </button>
+            </>
+          ) : null}
         </div>
       ) : null}
       {submitError ? (
@@ -708,8 +739,22 @@ function AnswerForm({
 
         <div className="toolbar" style={{ marginBottom: 0 }}>
           <button type="submit" className="primary" disabled={submitting || conflict}>
-            {submitting ? 'Saving…' : draft.id ? 'Save changes' : 'Create answer'}
+            {submitting
+              ? 'Saving…'
+              : draft.status === 'ACTIVE'
+                ? draft.id
+                  ? 'Save and keep live'
+                  : 'Create and publish'
+                : draft.id
+                  ? `Save as ${draft.status.toLowerCase()}`
+                  : 'Save as draft'}
           </button>
+          {draft.status !== 'ACTIVE' ? (
+            <span className="hint">
+              A {draft.status.toLowerCase()} answer is not served by either bot. Set the status to
+              ACTIVE to make it live.
+            </span>
+          ) : null}
         </div>
       </form>
     </Card>
