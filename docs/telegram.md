@@ -376,11 +376,12 @@ Both bots can answer from question/answer pairs an HR author publishes in the da
 **Knowledge → Bot training**. The orchestrator consults them before planning any tool call, and
 serves a match **verbatim** — no provider call, no paraphrase, no cost.
 
-| | External bot | Internal bot |
-|---|---|---|
-| Audiences it may serve | `EXTERNAL`, `BOTH` | `INTERNAL`, `BOTH` |
-| Classification ceiling | `PUBLIC` only | The caller's own ceiling, from the gateway |
-| Typical use | Hiring process, remote-work policy, what to bring to an interview | Payroll portal, who approves leave, IT self-service |
+| | External bot | Internal bot (unverified) | Internal bot (verified) |
+|---|---|---|---|
+| Audiences it may serve | `EXTERNAL`, `BOTH` | `INTERNAL`, `BOTH` | `INTERNAL`, `BOTH` |
+| Classification ceiling | `PUBLIC` only | `PUBLIC` only | The caller's own ceiling |
+| Account-gated answers | n/a | **No** | Yes |
+| Typical use | Hiring process, what to bring to an interview | Who approves leave, how to reach HR, office hours | Payroll portal, leave balances, policy detail |
 
 This is the only knowledge path the external bot has. Policy documents remain INTERNAL and
 unreachable from the public zone, which is exactly why a candidate-facing answer has to be written
@@ -397,6 +398,12 @@ Behaviour worth knowing when reasoning about a reply:
   phrasing that is not listed is a phrasing the bot will not match.
 - Salary-shaped questions are never answered this way. `RESTRICTED`-risk intents skip the curated
   path and go to the PolicyGateway, which refuses and writes an audited `DENY`.
+- **An unlinked Telegram id can get general answers without verifying.** Not every internal question
+  is a personal one, so an author can mark an answer "answer this without a verified account". Only
+  `PUBLIC` answers may be marked that way, and the unverified path reaches curated answers and
+  nothing else — no tool, no document, no employee record — so a personal or credential question
+  still ends at the verification prompt. Replies on that path carry a footer explaining how to link
+  an account for the rest.
 - When neither a curated answer nor an authorised tool can answer, the internal bot records the
   question in the training backlog, which is what HR works through in the dashboard.
 

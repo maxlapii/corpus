@@ -30,12 +30,13 @@ describe('database schema', () => {
       '0006_rbac_reference.sql',
       '0007_knowledge_answers.sql',
       '0008_rbac_reference.sql',
+      '0009_answer_account_gate.sql',
     ])
 
     // Re-running must be a no-op.
     const second = await runMigrations(handle, loadMigrationsFromDir(migrationsDir()))
     expect(second.applied).toEqual([])
-    expect(second.skipped).toHaveLength(8)
+    expect(second.skipped).toHaveLength(9)
   })
 
   it('creates every expected table', async () => {

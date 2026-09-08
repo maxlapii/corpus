@@ -568,7 +568,8 @@ export class AIOrchestrator {
     const result = await this.deps.answerSearch.search({
       tenantId: identity.tenantId,
       query: message,
-      zone: identity.zone,
+      compartment: compartmentFor(identity.channel),
+      verifiedAccount: identity.kind === 'USER',
       allowedClassifications: decision.allowedClassifications,
       onDate: today,
       limit: 3,
@@ -597,6 +598,65 @@ export class AIOrchestrator {
     return best
   }
 
+  /**
+   * Curated answers only — no tools, no provider call, no document retrieval.
+   *
+   * The internal bot uses this for a Telegram id that has not been linked to an
+   * employee: general staff information does not need an account, but anything
+   * personal or credential-bearing does, and this path structurally cannot
+   * reach either. Returns null when nothing general matches, which is the
+   * caller's cue to ask the person to verify.
+   */
+  async answerFromCuratedOnly(request: {
+    identity: Identity
+    message: string
+    requestId: string
+    today?: DateOnly
+    persist?: boolean
+  }): Promise<{ text: string; answerId: string } | null> {
+    const identity = request.identity
+    const message = truncate(request.message.trim(), MAX_MESSAGE_CHARS)
+    if (message.length === 0) return null
+
+    const budget = await this.deps.rateLimiter.consume(
+      `ai:${identity.tenantId}:${identity.subjectKey}`,
+      this.deps.limits.aiRule,
+    )
+    if (!budget.allowed) return null
+
+    const curated = await this.curatedAnswerFor(
+      identity,
+      message,
+      request.today ?? todayUtc(),
+      request.requestId,
+    )
+    if (!curated) return null
+
+    const filtered = filterAiResponse(curated.answer, {
+      groundedNumbers: figuresIn(curated.answer),
+    })
+
+    // Recorded like any other turn (§29). The exchange is what an operator
+    // needs when asking why a stranger was told something.
+    if (request.persist !== false) {
+      const scope = tenantScope(identity.tenantId)
+      const conversation = await this.deps.repos.conversations.findOrCreate(scope, {
+        channel: identity.channel,
+        subjectKey: identity.subjectKey,
+        userId: identity.kind === 'USER' ? identity.userId : null,
+        candidateId: null,
+      })
+      await this.deps.repos.conversations.appendMessage(scope, {
+        conversationId: conversation.id,
+        role: 'user',
+        content: message,
+      })
+      await this.persistAssistant(scope, conversation.id, filtered.text, 'HR_POLICY_QUESTION', true)
+    }
+
+    return { text: filtered.text, answerId: curated.answerId }
+  }
+
   private async persistAssistant(
     scope: { tenantId: string },
     conversationId: string | null,
@@ -619,6 +679,16 @@ function addUsage(
   b: { inputTokens: number; outputTokens: number },
 ): { inputTokens: number; outputTokens: number } {
   return { inputTokens: a.inputTokens + b.inputTokens, outputTokens: a.outputTokens + b.outputTokens }
+}
+
+/**
+ * Which set of curated answers the caller is talking to, taken from the channel
+ * rather than the security zone. An unverified person messaging the internal
+ * bot is in the internal compartment with no clearance — a different situation
+ * from a candidate on the public bot, and the two must not be conflated.
+ */
+function compartmentFor(channel: Identity['channel']): 'EXTERNAL' | 'INTERNAL' {
+  return channel === 'TELEGRAM_EXTERNAL' ? 'EXTERNAL' : 'INTERNAL'
 }
 
 /**

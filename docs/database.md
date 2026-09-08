@@ -62,7 +62,7 @@ depend on.
 
 ## 2. Migrations at a glance
 
-Eight forward-only SQL files, applied in filename order. There are no down-migrations.
+Nine forward-only SQL files, applied in filename order. There are no down-migrations.
 
 | File | Purpose | Tables created |
 | --- | --- | --- |
@@ -74,6 +74,7 @@ Eight forward-only SQL files, applied in filename order. There are no down-migra
 | `migrations/0006_rbac_reference.sql` | **Generated** reference data: roles, permissions, grants (superseded by 0008) | 0 (data only) |
 | `migrations/0007_knowledge_answers.sql` | Curated bot answers, training phrasings, FTS5 index + 3 triggers | 3 (one virtual) |
 | `migrations/0008_rbac_reference.sql` | **Generated** reference data, reissued for the `faq.*` permissions | 0 (data only) |
+| `migrations/0009_answer_account_gate.sql` | `requires_account` on curated answers, plus two guard triggers | 0 (column + triggers) |
 
 `tests/integration/schema.test.ts` asserts that all six apply cleanly to a real SQLite
 engine, that re-running is a no-op, and that every one of the 39 tables exists.
@@ -189,7 +190,7 @@ then `INSERT` for grants), so a fresh database and an upgraded one converge on i
 
 | Table | Purpose | Notes |
 |---|---|---|
-| `knowledge_answers` | One approved question/answer pair | `audience` ∈ {EXTERNAL, INTERNAL, BOTH}, `classification`, `status` ∈ {DRAFT, ACTIVE, ARCHIVED}, effective dates, `search_text` |
+| `knowledge_answers` | One approved question/answer pair | `audience` ∈ {EXTERNAL, INTERNAL, BOTH}, `classification`, `status` ∈ {DRAFT, ACTIVE, ARCHIVED}, `requires_account` (0009), effective dates, `search_text` |
 | `knowledge_answer_phrases` | Alternative phrasings the bot should recognise | Unique per `(answer_id, phrase)` |
 | `knowledge_answers_fts` | FTS5 external-content index over `search_text` + `answer` | Kept in step by three triggers, mirroring `document_chunks_fts` |
 
@@ -210,6 +211,25 @@ way a person might ask. The repository rebuilds it on any phrase change.
 
 The migration also adds `resolved_answer_id` and `resolved_by_user_id` to `unanswered_questions`,
 linking a gap the bot had to the curated answer that now covers it.
+
+### 3.8 `0009_answer_account_gate.sql` — the verified-account gate
+
+Adds `requires_account INTEGER NOT NULL DEFAULT 1`, so an author can publish general staff
+information ("who approves leave") that the internal bot answers before a Telegram id has been
+linked, while anything personal or credential-bearing stays behind verification. Existing
+external-audience rows are backfilled to `0`, since a candidate has no account to verify.
+
+SQLite cannot attach a `CHECK` through `ALTER TABLE`, so the invariant is two `BEFORE` triggers
+that `RAISE(ABORT)`:
+
+```sql
+WHEN (new.requires_account = 0 AND new.classification <> 'PUBLIC')
+  OR (new.audience <> 'INTERNAL' AND new.requires_account <> 0)
+```
+
+Same guarantee as a constraint — the database refuses the row whatever the caller believes — and
+the classification filter still runs independently, so the gate can never widen access to
+classified text.
 
 ---
 

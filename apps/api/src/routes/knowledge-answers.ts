@@ -19,6 +19,7 @@
 import {
   arrayOf,
   badRequest,
+  bool,
   conflict,
   dateOnly,
   makePage,
@@ -54,6 +55,7 @@ const writeBody = object({
   audience: str({ enum: ANSWER_AUDIENCES }),
   classification: str({ enum: CLASSIFICATIONS }),
   status: optional(str({ enum: ANSWER_STATUSES })),
+  requiresAccount: optional(bool()),
   phrases: optional(arrayOf(str({ min: 3, max: 300 }), { max: MAX_TRAINING_PHRASES })),
   effectiveFrom: optional(dateOnly()),
   effectiveTo: optional(dateOnly()),
@@ -152,7 +154,10 @@ knowledgeAnswerRoutes.post('/preview', async (c) => {
   const result = await container.answerSearch.search({
     tenantId: identity.tenantId,
     query: body.question,
-    zone: body.audience as 'EXTERNAL' | 'INTERNAL',
+    compartment: body.audience as 'EXTERNAL' | 'INTERNAL',
+    // The preview always models a reader who has verified, so an author sees
+    // the full set. `requiresAccount` is shown per row instead.
+    verifiedAccount: true,
     allowedClassifications,
     onDate: container.today,
     limit: 3,
@@ -168,6 +173,7 @@ knowledgeAnswerRoutes.post('/preview', async (c) => {
       classification: a.classification,
       coverage: Number(a.coverage.toFixed(2)),
       termMatches: a.termMatches,
+      requiresAccount: a.requiresAccount,
       wouldServe: a.coverage >= 0.67 && a.termMatches >= 2,
     })),
   })
@@ -381,6 +387,7 @@ interface WriteBody {
   audience: string
   classification: string
   phrases?: string[]
+  requiresAccount?: boolean
   effectiveFrom?: string
   effectiveTo?: string
 }
@@ -391,6 +398,7 @@ function toDraft(body: WriteBody, today: string) {
     answer: body.answer,
     audience: body.audience as AnswerAudience,
     classification: body.classification as Classification,
+    requiresAccount: body.requiresAccount,
     phrases: body.phrases ?? [],
     effectiveFrom: body.effectiveFrom ?? today,
     effectiveTo: body.effectiveTo ?? null,

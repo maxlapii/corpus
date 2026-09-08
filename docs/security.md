@@ -406,14 +406,15 @@ Proof: `tests/integration/rag-permission-filtering.test.ts` (per-role ceilings, 
 
 Curated answers (**Knowledge → Bot training**) are the one knowledge path reachable from the EXTERNAL zone, and the one served **verbatim with no model turn**. There is no summarisation step in between, so retrieval is the whole control.
 
-Two axes, both filtered in SQL (`KnowledgeAnswerRepository.search()`):
+Three axes, all filtered in SQL (`KnowledgeAnswerRepository.search()`):
 
 | Axis | Source | Never from |
 |---|---|---|
-| `audience` ∈ {EXTERNAL, INTERNAL, BOTH} | The verified channel's zone | The caller, the model, the request body |
+| `audience` ∈ {EXTERNAL, INTERNAL, BOTH} | The verified channel | The caller, the model, the request body |
 | `classification` | `AllowDecision.allowedClassifications` from `knowledge.answer:search` | Anything the caller supplies |
+| `requires_account` | `identity.kind === 'USER'` | Anything the caller supplies |
 
-`AUDIENCES_FOR_ZONE` makes the axis a compartment rather than a ladder: EXTERNAL sees `{EXTERNAL, BOTH}`, INTERNAL sees `{INTERNAL, BOTH}`. An EXTERNAL-only answer is invisible internally too.
+`AUDIENCES_FOR_COMPARTMENT` makes the first axis a compartment rather than a ladder: EXTERNAL sees `{EXTERNAL, BOTH}`, INTERNAL sees `{INTERNAL, BOTH}`. An EXTERNAL-only answer is invisible internally too. The compartment comes from the **channel**, not the security zone, so an unverified person on the internal bot is correctly placed in the internal compartment with no clearance rather than being conflated with a candidate.
 
 The governing invariant is enforced four times, and deliberately so:
 
@@ -431,9 +432,19 @@ Two further properties worth stating explicitly:
 - **The curated lookup runs before the intent zone gate**, so a candidate asking a policy-shaped question gets the answer HR published for candidates rather than a zone refusal. `RESTRICTED`-risk intents are excluded from that shortcut entirely: a salary question still reaches the gate and still leaves an audited `DENY`, whatever curated text happens to match it. Both halves are pinned by tests.
 - **A match must clear a threshold** — ≥ 0.67 stem coverage of the asker's question and ≥ 2 matching stems — before approved text is reused. Below it the turn falls through to normal retrieval. Declining is safe; confidently serving the wrong approved answer is not.
 
+### The verified-account gate
+
+Not every internal question is a personal one, so a blanket "verified account required" rule made the internal bot useless for general staff information. `requires_account` makes that an explicit per-answer decision, bounded so it cannot become a hole:
+
+- An answer may only drop the requirement when it is classified `PUBLIC`. Enforced in `validateAnswerDraft`, and again by two `BEFORE` triggers in `migrations/0009_answer_account_gate.sql` that `RAISE(ABORT)` — SQLite cannot add a `CHECK` via `ALTER TABLE`, so the triggers carry the same database-level guarantee.
+- The classification filter runs **independently** of the gate. An unverified reader is anonymous, so `maxReadableClassification` gives them `PUBLIC` regardless of what any `requires_account` flag says.
+- An external-audience answer is never account-gated, because a candidate has no account; `resolveRequiresAccount` forces it off rather than allowing an incoherent state.
+
+On the internal bot, an unlinked Telegram id reaches `AIOrchestrator.answerFromCuratedOnly()` and nothing else: no tool, no document, no provider call, no employee record. A personal or credential question therefore finds nothing and falls through to the verification prompt. There is no maintained list of "personal" topics — anything person-specific lives behind a tool, and this path has none. The `UNKNOWN_USER` security event is still recorded either way.
+
 Injection-shaped text inside a curated answer is logged, not stripped: there is no model turn for it to hijack, and a holder of `faq.manage` approved it. Figures inside a served answer are passed to the response filter as `groundedNumbers`, because a human approved them — otherwise the filter would redact the very numbers HR published.
 
-Proof: `tests/security/bot-training.test.ts` (30), `tests/unit/answer-flow.test.ts` (17), `tests/e2e/bot-training-flow.test.ts` (5).
+Proof: `tests/security/bot-training.test.ts` (40), `tests/unit/answer-flow.test.ts` (21), `tests/e2e/bot-training-flow.test.ts` (5).
 
 ---
 
@@ -573,8 +584,8 @@ Local results on 2026-09-07: `npx vitest run tests/security` → 3 files, 157 te
 | 19 | Input validation exists | `packages/shared/src/validate.ts`; `middleware/body.ts`; tool validators | `tests/unit/misc-units.test.ts` "validation"; `tests/unit/tool-registry.test.ts` "rejects invalid arguments before the handler runs"; `rate-limiting.test.ts` "rejects an oversized request body" |
 | 20 | Production state is not stored on local filesystem | D1 + R2 via `StorageService`; per-request container; memory fallbacks reported by `/health` | `tests/integration/repositories.test.ts`; `/health` `documentStorage` field |
 | 21 | Database migrations work | `migrations/*.sql`, `packages/db/src/migrations.ts` | `tests/integration/schema.test.ts` "applies all migrations exactly once", "enforces foreign keys" |
-| 22 | CI passes | `.github/workflows/ci.yml` (secret scan → lint → typecheck → unit → integration → security → e2e → RBAC drift → build) | Full suite passed locally on 2026-09-09 (569 tests). The GitHub Actions run itself must be confirmed in the repository's Actions tab. |
-| 23 | Security tests pass | `tests/security/*.test.ts` | `npm run test:security` → 235 passed (2026-09-09) |
+| 22 | CI passes | `.github/workflows/ci.yml` (secret scan → lint → typecheck → unit → integration → security → e2e → RBAC drift → build) | Full suite passed locally on 2026-09-09 (583 tests). The GitHub Actions run itself must be confirmed in the repository's Actions tab. |
+| 23 | Security tests pass | `tests/security/*.test.ts` | `npm run test:security` → 245 passed (2026-09-09) |
 
 ---
 

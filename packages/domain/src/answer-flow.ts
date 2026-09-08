@@ -40,9 +40,28 @@ export interface AnswerDraft {
   answer: string
   audience: AnswerAudience
   classification: Classification
+  /**
+   * Whether the reader must hold a verified account. False lets an unverified
+   * person on the internal bot receive general staff information — "who
+   * approves leave", "how do I reach IT" — without linking an account first.
+   * Only PUBLIC text may drop the requirement.
+   */
+  requiresAccount?: boolean
   phrases?: readonly string[]
   effectiveFrom: string
   effectiveTo?: string | null
+}
+
+/**
+ * An external-audience answer is written for candidates, who have no account
+ * to verify, so the requirement is meaningless there and always resolves off.
+ */
+export function resolveRequiresAccount(
+  audience: AnswerAudience,
+  requested: boolean | undefined,
+): boolean {
+  if (audienceReachesExternalZone(audience)) return false
+  return requested ?? true
 }
 
 export const MAX_TRAINING_PHRASES = 20
@@ -81,6 +100,19 @@ export function validateAnswerDraft(draft: AnswerDraft): AnswerValidationIssue[]
       message:
         'An answer the external bot can serve must be classified PUBLIC. ' +
         'Set the audience to INTERNAL, or reclassify the answer as PUBLIC.',
+    })
+  }
+
+  if (
+    resolveRequiresAccount(draft.audience, draft.requiresAccount) === false &&
+    draft.classification !== 'PUBLIC'
+  ) {
+    issues.push({
+      field: 'requiresAccount',
+      code: 'UNGATED_MUST_BE_PUBLIC',
+      message:
+        'Only a PUBLIC answer can be given to someone without a verified account. ' +
+        'Reclassify it as PUBLIC, or leave the account requirement in place.',
     })
   }
 

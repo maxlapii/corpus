@@ -431,10 +431,10 @@ builds for Pages with `npm run pages:build --workspace @corpus/web` and deploys 
 ## Testing
 
 ```bash
-npm test                   # all 569 tests (vitest run)
-npm run test:unit          # tests/unit        — 238 tests
+npm test                   # all 583 tests (vitest run)
+npm run test:unit          # tests/unit        — 242 tests
 npm run test:integration   # tests/integration —  76 tests
-npm run test:security      # tests/security    — 235 tests
+npm run test:security      # tests/security    — 245 tests
 npm run test:e2e           # tests/e2e         —  20 tests
 npm run test:watch         # vitest in watch mode
 
@@ -554,7 +554,9 @@ The migration path and its sequencing are described in [docs/roadmap.md](docs/ro
 - Bot training: curated question/answer pairs authored in the dashboard and served **verbatim** by
   either Telegram bot, with an audience axis (external / internal / both) on top of the usual
   classification filter, training phrasings, draft-and-publish, effective dates, a per-bot preview,
-  and a backlog of questions the bots could not answer.
+  and a backlog of questions the bots could not answer. General staff answers can be marked as
+  needing no verified account, so the internal bot is useful before a Telegram id is linked while
+  anything personal or credential-bearing still requires verification.
 - AI layer: provider abstraction with mock, Anthropic, OpenAI and OpenAI-compatible providers;
   intent classification with server-side canonicalisation; a tool registry where every tool is
   authorised before its handler runs; a response filter; and per-subject rate limits.

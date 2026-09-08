@@ -25,6 +25,7 @@ async function authorAnswer(
     audience: 'EXTERNAL' | 'INTERNAL' | 'BOTH'
     classification: 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED'
     status?: 'DRAFT' | 'ACTIVE' | 'ARCHIVED'
+    requiresAccount?: boolean
     effectiveFrom?: string
     effectiveTo?: string | null
     phrases?: string[]
@@ -38,6 +39,7 @@ async function authorAnswer(
     audience: input.audience,
     classification: input.classification,
     status: input.status ?? 'ACTIVE',
+    ...(input.requiresAccount === undefined ? {} : { requiresAccount: input.requiresAccount }),
     effectiveFrom: input.effectiveFrom ?? '2020-01-01',
     effectiveTo: input.effectiveTo ?? null,
     phrases: input.phrases ?? [],
@@ -70,7 +72,8 @@ async function askExternalBot(h: Harness, text: string, telegramUserId = 909090)
 function externalSearch(h: Harness, query: string) {
   return h.database.repos.knowledgeAnswers.search(tenantScope(h.seed.tenantId), {
     query,
-    zone: 'EXTERNAL',
+    compartment: 'EXTERNAL',
+    verifiedAccount: true,
     allowedClassifications: ['PUBLIC'],
     onDate: '2026-06-01',
     limit: 10,
@@ -119,7 +122,8 @@ describe('curated answers: audience isolation', () => {
 
     const hits = await h.database.repos.knowledgeAnswers.search(tenantScope(h.seed.tenantId), {
       query: 'Candidate only notice',
-      zone: 'INTERNAL',
+      compartment: 'INTERNAL',
+      verifiedAccount: true,
       allowedClassifications: ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'],
       onDate: '2026-06-01',
       limit: 10,
@@ -138,7 +142,8 @@ describe('curated answers: audience isolation', () => {
     for (const zone of ['EXTERNAL', 'INTERNAL'] as const) {
       const hits = await h.database.repos.knowledgeAnswers.search(tenantScope(h.seed.tenantId), {
         query: 'office opening hours',
-        zone,
+        compartment: zone,
+        verifiedAccount: true,
         allowedClassifications: ['PUBLIC'],
         onDate: '2026-06-01',
         limit: 10,
@@ -159,7 +164,8 @@ describe('curated answers: audience isolation', () => {
       tenantScope(h.seed.tenantId),
       {
         terms: ['director', 'salary', 'band'],
-        zone: 'EXTERNAL',
+        compartment: 'EXTERNAL',
+        verifiedAccount: true,
         allowedClassifications: ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'],
         onDate: '2026-06-01',
         limit: 10,
@@ -188,7 +194,8 @@ describe('curated answers: classification, status and dates', () => {
       tenantScope(h.seed.tenantId),
       {
         query: 'disciplinary escalation path',
-        zone: 'INTERNAL',
+        compartment: 'INTERNAL',
+        verifiedAccount: true,
         allowedClassifications: ['PUBLIC', 'INTERNAL'],
         onDate: '2026-06-01',
         limit: 10,
@@ -198,7 +205,8 @@ describe('curated answers: classification, status and dates', () => {
 
     const asHr = await h.database.repos.knowledgeAnswers.search(tenantScope(h.seed.tenantId), {
       query: 'disciplinary escalation path',
-      zone: 'INTERNAL',
+      compartment: 'INTERNAL',
+      verifiedAccount: true,
       allowedClassifications: ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL'],
       onDate: '2026-06-01',
       limit: 10,
@@ -216,7 +224,8 @@ describe('curated answers: classification, status and dates', () => {
 
     const hits = await h.database.repos.knowledgeAnswers.search(tenantScope(h.seed.tenantId), {
       query: 'Anything at all',
-      zone: 'EXTERNAL',
+      compartment: 'EXTERNAL',
+      verifiedAccount: true,
       allowedClassifications: [],
       onDate: '2026-06-01',
       limit: 10,
@@ -249,7 +258,8 @@ describe('curated answers: classification, status and dates', () => {
     const scope = tenantScope(h.seed.tenantId)
     const whileEffective = await h.database.repos.knowledgeAnswers.search(scope, {
       query: 'old parking arrangement',
-      zone: 'EXTERNAL',
+      compartment: 'EXTERNAL',
+      verifiedAccount: true,
       allowedClassifications: ['PUBLIC'],
       onDate: '2025-06-01',
       limit: 10,
@@ -258,7 +268,8 @@ describe('curated answers: classification, status and dates', () => {
 
     const afterExpiry = await h.database.repos.knowledgeAnswers.search(scope, {
       query: 'old parking arrangement',
-      zone: 'EXTERNAL',
+      compartment: 'EXTERNAL',
+      verifiedAccount: true,
       allowedClassifications: ['PUBLIC'],
       onDate: '2026-06-01',
       limit: 10,
@@ -325,7 +336,8 @@ describe('curated answers: tenant isolation', () => {
       tenantScope(other.tenantId),
       {
         query: 'Tenant B internal notice',
-        zone: 'EXTERNAL',
+        compartment: 'EXTERNAL',
+        verifiedAccount: true,
         allowedClassifications: ['PUBLIC'],
         onDate: '2026-06-01',
         limit: 10,
@@ -477,7 +489,8 @@ describe('curated answers: the external bot end to end', () => {
     const adjacent = await service.search({
       tenantId: h.seed.tenantId,
       query: 'what is the minimum password complexity requirement for company laptops',
-      zone: 'INTERNAL',
+      compartment: 'INTERNAL',
+      verifiedAccount: true,
       allowedClassifications: ['PUBLIC', 'INTERNAL'],
       onDate: '2026-06-01',
       limit: 3,
@@ -487,7 +500,8 @@ describe('curated answers: the external bot end to end', () => {
     const onTopic = await service.search({
       tenantId: h.seed.tenantId,
       query: 'How do I reset my expenses portal password?',
-      zone: 'INTERNAL',
+      compartment: 'INTERNAL',
+      verifiedAccount: true,
       allowedClassifications: ['PUBLIC', 'INTERNAL'],
       onDate: '2026-06-01',
       limit: 3,
@@ -550,5 +564,189 @@ describe('curated answers cannot bypass the RESTRICTED intent gate', () => {
       [h.seed.tenantId],
     )
     expect(rows.map((r) => r.content).join('\n')).not.toContain('9000')
+  })
+})
+
+describe('curated answers: the verified-account gate', () => {
+  let h: Harness
+  beforeEach(async () => {
+    h = await createHarness()
+  })
+  afterEach(() => h.close())
+
+  const internalSearch = (verifiedAccount: boolean, query: string) =>
+    h.database.repos.knowledgeAnswers.search(tenantScope(h.seed.tenantId), {
+      query,
+      compartment: 'INTERNAL',
+      verifiedAccount,
+      allowedClassifications: verifiedAccount
+        ? ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']
+        : ['PUBLIC'],
+      onDate: '2026-06-01',
+      limit: 10,
+    })
+
+  it('withholds an account-gated answer from an unverified reader', async () => {
+    await authorAnswer(h, {
+      question: 'What is the office wifi password?',
+      answer: 'Ask IT for the current guest credentials.',
+      audience: 'INTERNAL',
+      classification: 'PUBLIC',
+      requiresAccount: true,
+    })
+
+    const unverified = await internalSearch(false, 'office wifi password')
+    expect(unverified.map((h) => h.question)).not.toContain('What is the office wifi password?')
+
+    const verified = await internalSearch(true, 'office wifi password')
+    expect(verified.map((h) => h.question)).toContain('What is the office wifi password?')
+  })
+
+  it('serves a general answer to an unverified reader', async () => {
+    await authorAnswer(h, {
+      question: 'Where is the staff entrance?',
+      answer: 'The staff entrance is on the north side of the building.',
+      audience: 'INTERNAL',
+      classification: 'PUBLIC',
+      requiresAccount: false,
+    })
+
+    const hits = await internalSearch(false, 'Where is the staff entrance?')
+    expect(hits.map((h) => h.question)).toContain('Where is the staff entrance?')
+  })
+
+  it('the LIKE fallback applies the same account gate', async () => {
+    await authorAnswer(h, {
+      question: 'What is the office wifi password?',
+      answer: 'Ask IT for the current guest credentials.',
+      audience: 'INTERNAL',
+      classification: 'PUBLIC',
+      requiresAccount: true,
+    })
+
+    const hits = await h.database.repos.knowledgeAnswers.searchFallback(
+      tenantScope(h.seed.tenantId),
+      {
+        terms: ['office', 'wifi', 'password'],
+        compartment: 'INTERNAL',
+        verifiedAccount: false,
+        allowedClassifications: ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'],
+        onDate: '2026-06-01',
+        limit: 10,
+      },
+    )
+    expect(hits).toHaveLength(0)
+  })
+
+  it.each(['INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'] as const)(
+    'the database refuses an ungated %s answer',
+    async (classification) => {
+      // The trigger in migration 0009 is the last line: classified text can
+      // never be dropped out of the account gate, whatever the caller believes.
+      await expect(
+        authorAnswer(h, {
+          question: `Ungated ${classification}`,
+          answer: SECRET_ANSWER,
+          audience: 'INTERNAL',
+          classification,
+          requiresAccount: false,
+        }),
+      ).rejects.toThrow()
+    },
+  )
+
+  it('rejects an ungated classified answer through the API', async () => {
+    const hrAdmin = await h.login(seedEmail(h.seed, 'hrAdmin'))
+    const response = await hrAdmin.post('/knowledge/answers', {
+      question: 'Ungated internal guidance',
+      answer: 'Should never be reachable without an account.',
+      audience: 'INTERNAL',
+      classification: 'INTERNAL',
+      requiresAccount: false,
+    })
+    expect(response.status).toBe(400)
+    expect(String(response.body.error.message)).toMatch(/PUBLIC/i)
+  })
+})
+
+describe('the internal bot and unverified users', () => {
+  let h: Harness
+  beforeEach(async () => {
+    h = await createHarness()
+  })
+  afterEach(() => h.close())
+
+  async function askInternalBot(text: string, telegramUserId: number): Promise<number> {
+    const response = await h.request('/telegram/internal', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-telegram-bot-api-secret-token': TEST_WEBHOOK_SECRET,
+      },
+      body: JSON.stringify({
+        update_id: Math.floor(Math.random() * 1e9),
+        message: {
+          message_id: Math.floor(Math.random() * 1e9),
+          chat: { id: telegramUserId, type: 'private' },
+          date: Math.floor(Date.now() / 1000),
+          from: { id: telegramUserId, first_name: 'Stranger' },
+          text,
+        },
+      }),
+    })
+    return response.status
+  }
+
+  async function lastInternalReply(): Promise<string> {
+    const rows = await h.database.db.many<{ content: string }>(
+      `SELECT m.content FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id
+        WHERE m.tenant_id = ? AND c.channel = 'TELEGRAM_INTERNAL' AND m.role = 'assistant'
+        ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1`,
+      [h.seed.tenantId],
+    )
+    return rows[0]?.content ?? ''
+  }
+
+  it('answers a general question without a linked account', async () => {
+    await authorAnswer(h, {
+      question: 'What are the standard working hours?',
+      answer: 'Standard hours are 08:30 to 17:30, Monday to Friday.',
+      audience: 'INTERNAL',
+      classification: 'PUBLIC',
+      requiresAccount: false,
+      phrases: ['what time does the office open', 'standard working hours'],
+    })
+
+    expect(await askInternalBot('What are the standard working hours?', 313001)).toBe(200)
+    expect(await lastInternalReply()).toContain('08:30 to 17:30')
+  })
+
+  it('still refuses a personal question without a linked account', async () => {
+    await authorAnswer(h, {
+      question: 'What are the standard working hours?',
+      answer: 'Standard hours are 08:30 to 17:30, Monday to Friday.',
+      audience: 'INTERNAL',
+      classification: 'PUBLIC',
+      requiresAccount: false,
+    })
+
+    expect(await askInternalBot('What is my remaining leave balance?', 313002)).toBe(200)
+    // Nothing is recorded, because nothing was answered: the refusal is the
+    // verification prompt, which never reaches the conversation log.
+    expect(await lastInternalReply()).toBe('')
+  })
+
+  it('never serves an account-gated answer to an unverified user', async () => {
+    await authorAnswer(h, {
+      question: 'What is the disciplinary escalation path?',
+      answer: 'Escalate to the HR Director after a second written warning.',
+      audience: 'INTERNAL',
+      classification: 'CONFIDENTIAL',
+      requiresAccount: true,
+    })
+
+    expect(await askInternalBot('What is the disciplinary escalation path?', 313003)).toBe(200)
+    expect(await lastInternalReply()).not.toContain('HR Director after a second')
   })
 })

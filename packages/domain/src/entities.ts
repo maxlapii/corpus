@@ -344,6 +344,8 @@ export interface KnowledgeAnswer {
   audience: AnswerAudience
   classification: Classification
   status: AnswerStatus
+  /** False lets an unverified person on the internal bot receive this. */
+  requiresAccount: boolean
   effectiveFrom: DateOnly
   effectiveTo: DateOnly | null
   phrases: string[]

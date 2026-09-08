@@ -333,6 +333,8 @@ const CURATED_ANSWERS = [
     category: 'IT',
     audience: 'INTERNAL' as const,
     classification: 'INTERNAL' as const,
+    // Credential-adjacent, so it stays behind a verified account.
+    requiresAccount: true,
     phrases: ['payroll password reset', 'locked out of payroll', 'cannot sign in to payroll'],
   },
   {
@@ -342,8 +344,22 @@ const CURATED_ANSWERS = [
       'HR can approve on their behalf.',
     category: 'LEAVE',
     audience: 'INTERNAL' as const,
-    classification: 'INTERNAL' as const,
+    // General process information: PUBLIC, and answerable before someone links
+    // their Telegram account. Their own balance still is not.
+    classification: 'PUBLIC' as const,
+    requiresAccount: false,
     phrases: ['who signs off my leave', 'leave approval chain', 'manager approve holiday'],
+  },
+  {
+    question: 'How do I contact the HR team?',
+    answer:
+      'Reach the HR team through the internal helpdesk, or ask this assistant. ' +
+      'The team answers within one working day.',
+    category: 'GENERAL',
+    audience: 'INTERNAL' as const,
+    classification: 'PUBLIC' as const,
+    requiresAccount: false,
+    phrases: ['how do I reach HR', 'contact human resources', 'HR helpdesk'],
   },
 ]
 
@@ -548,6 +564,7 @@ export async function seedDatabase(
         audience: curated.audience,
         classification: curated.classification,
         status: 'ACTIVE',
+        ...(curated.requiresAccount === undefined ? {} : { requiresAccount: curated.requiresAccount }),
         effectiveFrom: `${year - 1}-01-01`,
         effectiveTo: null,
         phrases: curated.phrases,

@@ -787,12 +787,25 @@ approved. It also costs nothing — the turn never reaches a provider, which mat
 The cost of that is precision. Because there is no model in the loop to judge whether the question
 really matches, the matching threshold has to do that job. See §14.4.
 
-### 14.2 The two access axes
+### 14.2 The three access axes
 
 | Column | Values | Decides |
 |---|---|---|
 | `audience` | `EXTERNAL`, `INTERNAL`, `BOTH` | Which bot may serve the answer |
-| `classification` | `PUBLIC` … `RESTRICTED` | Who may read it once inside the internal zone |
+| `classification` | `PUBLIC` … `RESTRICTED` | What clearance the reader needs |
+| `requires_account` | `1` / `0` | Whether the reader must have a verified account at all |
+
+The third axis exists because not every internal question is a personal one.
+"Who approves leave?" and "how do I reach HR?" are general staff information; only
+credential- and person-specific answers actually need an account behind them. An author decides
+that per answer, and an answer can only drop the requirement when it is classified `PUBLIC` — so
+the gate can never widen access to classified text, and the classification filter still runs
+independently of it.
+
+The compartment (`audience`) is chosen from the **channel**, not from the caller's security zone:
+an unverified person messaging the internal bot is in the internal compartment with no clearance,
+which is a different situation from a candidate on the public bot. `compartmentFor()` in the
+orchestrator maps `TELEGRAM_EXTERNAL → EXTERNAL` and everything else to `INTERNAL`.
 
 The invariant tying them together:
 
@@ -810,6 +823,12 @@ independent places, deliberately:
 Only the last two are load-bearing; `tests/security/bot-training.test.ts` inserts directly through
 the repository, bypassing 1–3, to prove the schema alone still refuses the row.
 
+The account gate is protected the same way. `resolveRequiresAccount` forces it off for an external
+audience (candidates have no account to check), `validateAnswerDraft` refuses to ungate anything
+above `PUBLIC`, and two `BEFORE` triggers in migration 0009 raise `ABORT` on either violation.
+SQLite cannot add a `CHECK` through `ALTER TABLE`, so the triggers are how the same
+database-level guarantee is kept.
+
 ### 14.3 The filtered query
 
 Identical in shape to the chunk query in §7.3 — every filter is inside the SQL, so an unauthorised
@@ -825,15 +844,16 @@ SELECT a.id, a.question, a.answer, a.classification,
    AND a.audience IN (...)          -- from the verified channel, never the caller
    AND a.classification IN (...)    -- from the gateway ALLOW decision
    AND a.status = 'ACTIVE'
+   AND (? = 1 OR a.requires_account = 0)   -- 1 when the reader has an account
    AND a.effective_from <= ?
    AND (a.effective_to IS NULL OR a.effective_to >= ?)
  ORDER BY rank
  LIMIT ?
 ```
 
-`AUDIENCES_FOR_ZONE` maps the zone to the audiences it may see: `EXTERNAL → ['EXTERNAL','BOTH']`,
-`INTERNAL → ['INTERNAL','BOTH']`. An `EXTERNAL`-only answer is therefore invisible internally as
-well — the axis is a compartment, not a privilege ladder.
+`AUDIENCES_FOR_COMPARTMENT` maps the compartment to the audiences it may see:
+`EXTERNAL → ['EXTERNAL','BOTH']`, `INTERNAL → ['INTERNAL','BOTH']`. An `EXTERNAL`-only answer is
+therefore invisible internally as well — the axis is a compartment, not a privilege ladder.
 
 There is a LIKE fallback with the same filters, for the same reason as §8.5, and
 `D1AnswerSearchService` re-asserts both the classification set and the audience in TypeScript after
@@ -891,7 +911,23 @@ Injection-shaped text inside a curated answer is logged but not stripped. There 
 it to hijack, and the text was approved by a holder of `faq.manage`; the log entry exists so an
 operator can notice an author pasting something odd.
 
-### 14.7 The training backlog
+### 14.7 Unverified readers on the internal bot
+
+A Telegram id that has not been linked to an employee gets one narrow path:
+`AIOrchestrator.answerFromCuratedOnly()`. It resolves an anonymous identity on channel
+`TELEGRAM_INTERNAL`, so the gateway hands back a `PUBLIC` ceiling and `verifiedAccount` is false —
+the reader can therefore only ever match a `PUBLIC`, `requires_account = 0` answer.
+
+The path structurally cannot reach a tool, a document, an employee record or a provider call, so a
+personal question simply finds nothing and falls through to the verification prompt. There is no
+list of "personal" topics to maintain: anything person-specific lives behind a tool, and this path
+has none.
+
+The exchange is persisted like any other turn, and an `UNKNOWN_USER` security event is still
+recorded — with a summary that distinguishes "answered from general staff information" from a plain
+unverified contact, so the security dashboard stays readable.
+
+### 14.8 The training backlog
 
 When the assistant refuses for lack of grounding (§8), the question is written to
 `unanswered_questions`. The dashboard lists those as the training backlog; answering one links the

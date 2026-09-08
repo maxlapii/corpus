@@ -9,6 +9,7 @@
 import { nowIso, prefixedId, toFtsQuery, type DateOnly } from '@corpus/shared'
 import {
   buildAnswerSearchText,
+  resolveRequiresAccount,
   type AnswerAudience,
   type AnswerStatus,
   type Classification,
@@ -25,9 +26,18 @@ export interface AnswerSearchHit {
   category: string
   audience: AnswerAudience
   classification: Classification
+  requiresAccount: boolean
   /** Lower is a better match (FTS5 bm25 convention). */
   rank: number
 }
+
+/** SQLite has no boolean type, so the 0/1 column is normalised on the way out. */
+type RawAnswerHit = Omit<AnswerSearchHit, 'requiresAccount'> & { requiresAccount: number }
+
+const normaliseHit = (row: RawAnswerHit): AnswerSearchHit => ({
+  ...row,
+  requiresAccount: Number(row.requiresAccount) === 1,
+})
 
 export interface AnswerListFilter {
   audience?: AnswerAudience
@@ -45,6 +55,7 @@ export interface AnswerWriteInput {
   audience: AnswerAudience
   classification: Classification
   status: AnswerStatus
+  requiresAccount?: boolean
   effectiveFrom: DateOnly
   effectiveTo: DateOnly | null
   phrases: readonly string[]
@@ -61,6 +72,7 @@ const mapAnswer = (row: Row, phrases: string[]): KnowledgeAnswer => ({
   audience: asString(row.audience) as AnswerAudience,
   classification: asString(row.classification) as Classification,
   status: asString(row.status) as AnswerStatus,
+  requiresAccount: asNumber(row.requires_account) === 1,
   effectiveFrom: asString(row.effective_from),
   effectiveTo: asStringOrNull(row.effective_to),
   phrases,
@@ -72,12 +84,28 @@ const mapAnswer = (row: Row, phrases: string[]): KnowledgeAnswer => ({
 })
 
 /**
- * Audiences whose rows a zone may retrieve. EXTERNAL deliberately cannot reach
- * an INTERNAL row even if that row were somehow classified PUBLIC.
+ * Audiences a compartment may retrieve. EXTERNAL deliberately cannot reach an
+ * INTERNAL row even if that row were somehow classified PUBLIC.
+ *
+ * The compartment comes from the *channel* the person is talking on, not from
+ * their security zone: an unverified person messaging the internal bot is in
+ * the internal compartment with no clearance, which is a different thing from
+ * a candidate on the public bot.
  */
-const AUDIENCES_FOR_ZONE: Record<'EXTERNAL' | 'INTERNAL', readonly AnswerAudience[]> = {
+const AUDIENCES_FOR_COMPARTMENT: Record<AnswerCompartment, readonly AnswerAudience[]> = {
   EXTERNAL: ['EXTERNAL', 'BOTH'],
   INTERNAL: ['INTERNAL', 'BOTH'],
+}
+
+export type AnswerCompartment = 'EXTERNAL' | 'INTERNAL'
+
+export interface AnswerRetrievalScope {
+  /** Which bot is asking. Derived from the channel, never from the caller. */
+  compartment: AnswerCompartment
+  /** From a gateway ALLOW decision. */
+  allowedClassifications: readonly Classification[]
+  /** Whether the reader holds a verified account. */
+  verifiedAccount: boolean
 }
 
 export class KnowledgeAnswerRepository {
@@ -152,10 +180,8 @@ export class KnowledgeAnswerRepository {
    */
   async search(
     scope: TenantScope,
-    input: {
+    input: AnswerRetrievalScope & {
       query: string
-      zone: 'EXTERNAL' | 'INTERNAL'
-      allowedClassifications: readonly Classification[]
       onDate: DateOnly
       limit: number
       category?: string
@@ -165,12 +191,13 @@ export class KnowledgeAnswerRepository {
     const match = toFtsQuery(input.query)
     if (!match) return []
 
-    const audiences = AUDIENCES_FOR_ZONE[input.zone]
+    const audiences = AUDIENCES_FOR_COMPARTMENT[input.compartment]
     const params: (string | number)[] = [
       match,
       scope.tenantId,
       ...audiences,
       ...input.allowedClassifications,
+      input.verifiedAccount ? 1 : 0,
       input.onDate,
       input.onDate,
     ]
@@ -181,13 +208,14 @@ export class KnowledgeAnswerRepository {
     }
     params.push(input.limit)
 
-    return this.db.many<AnswerSearchHit>(
+    const rows = await this.db.many<RawAnswerHit>(
       `SELECT a.id             AS answerId,
               a.question       AS question,
               a.answer         AS answer,
               a.category       AS category,
               a.audience       AS audience,
               a.classification AS classification,
+              a.requires_account AS requiresAccount,
               bm25(knowledge_answers_fts) AS rank
          FROM knowledge_answers_fts f
          JOIN knowledge_answers a ON a.id = f.answer_id
@@ -196,6 +224,7 @@ export class KnowledgeAnswerRepository {
           AND a.audience IN (${audiences.map(() => '?').join(', ')})
           AND a.classification IN (${input.allowedClassifications.map(() => '?').join(', ')})
           AND a.status = 'ACTIVE'
+          AND (? = 1 OR a.requires_account = 0)
           AND a.effective_from <= ?
           AND (a.effective_to IS NULL OR a.effective_to >= ?)
           ${categoryClause}
@@ -203,45 +232,51 @@ export class KnowledgeAnswerRepository {
         LIMIT ?`,
       params,
     )
+    return rows.map(normaliseHit)
   }
 
   /** LIKE fallback for the same filter set, used when FTS is unavailable. */
   async searchFallback(
     scope: TenantScope,
-    input: {
+    input: AnswerRetrievalScope & {
       terms: readonly string[]
-      zone: 'EXTERNAL' | 'INTERNAL'
-      allowedClassifications: readonly Classification[]
       onDate: DateOnly
       limit: number
     },
   ): Promise<AnswerSearchHit[]> {
     if (input.allowedClassifications.length === 0 || input.terms.length === 0) return []
 
-    const audiences = AUDIENCES_FOR_ZONE[input.zone]
+    const audiences = AUDIENCES_FOR_COMPARTMENT[input.compartment]
     const termClauses = input.terms
       .map(() => "(a.search_text LIKE ? ESCAPE '\\' OR a.answer LIKE ? ESCAPE '\\')")
       .join(' OR ')
-    const params: (string | number)[] = [scope.tenantId, ...audiences, ...input.allowedClassifications]
+    const params: (string | number)[] = [
+      scope.tenantId,
+      ...audiences,
+      ...input.allowedClassifications,
+      input.verifiedAccount ? 1 : 0,
+    ]
     for (const term of input.terms) {
       const like = `%${escapeLike(term)}%`
       params.push(like, like)
     }
     params.push(input.onDate, input.onDate, input.limit)
 
-    return this.db.many<AnswerSearchHit>(
+    const rows = await this.db.many<RawAnswerHit>(
       `SELECT a.id             AS answerId,
               a.question       AS question,
               a.answer         AS answer,
               a.category       AS category,
               a.audience       AS audience,
               a.classification AS classification,
+              a.requires_account AS requiresAccount,
               0                AS rank
          FROM knowledge_answers a
         WHERE a.tenant_id = ?
           AND a.audience IN (${audiences.map(() => '?').join(', ')})
           AND a.classification IN (${input.allowedClassifications.map(() => '?').join(', ')})
           AND a.status = 'ACTIVE'
+          AND (? = 1 OR a.requires_account = 0)
           AND (${termClauses})
           AND a.effective_from <= ?
           AND (a.effective_to IS NULL OR a.effective_to >= ?)
@@ -249,6 +284,7 @@ export class KnowledgeAnswerRepository {
         LIMIT ?`,
       params,
     )
+    return rows.map(normaliseHit)
   }
 
   async create(scope: TenantScope, input: AnswerWriteInput): Promise<KnowledgeAnswer> {
@@ -259,9 +295,9 @@ export class KnowledgeAnswerRepository {
     await this.db.run(
       `INSERT INTO knowledge_answers
          (id, tenant_id, question, answer, category, audience, classification, status,
-          effective_from, effective_to, search_text, source_unanswered_id,
+          requires_account, effective_from, effective_to, search_text, source_unanswered_id,
           created_at, updated_at, created_by, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         scope.tenantId,
@@ -271,6 +307,7 @@ export class KnowledgeAnswerRepository {
         input.audience,
         input.classification,
         input.status,
+        resolveRequiresAccount(input.audience, input.requiresAccount) ? 1 : 0,
         input.effectiveFrom,
         input.effectiveTo,
         buildAnswerSearchText(input.question, phrases),
@@ -297,8 +334,8 @@ export class KnowledgeAnswerRepository {
     const result = await this.db.run(
       `UPDATE knowledge_answers
           SET question = ?, answer = ?, category = ?, audience = ?, classification = ?,
-              status = ?, effective_from = ?, effective_to = ?, search_text = ?,
-              updated_at = ?, updated_by = ?
+              status = ?, requires_account = ?, effective_from = ?, effective_to = ?,
+              search_text = ?, updated_at = ?, updated_by = ?
         WHERE tenant_id = ? AND id = ?`,
       [
         input.question.trim(),
@@ -307,6 +344,7 @@ export class KnowledgeAnswerRepository {
         input.audience,
         input.classification,
         input.status,
+        resolveRequiresAccount(input.audience, input.requiresAccount) ? 1 : 0,
         input.effectiveFrom,
         input.effectiveTo,
         buildAnswerSearchText(input.question, phrases),

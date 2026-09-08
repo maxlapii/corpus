@@ -10,14 +10,22 @@
 
 import { tokenise, type DateOnly, type Logger } from '@corpus/shared'
 import type { AnswerAudience, Classification } from '@corpus/domain'
-import { tenantScope, type AnswerSearchHit, type KnowledgeAnswerRepository } from '@corpus/db'
+import {
+  tenantScope,
+  type AnswerCompartment,
+  type AnswerSearchHit,
+  type KnowledgeAnswerRepository,
+} from '@corpus/db'
 import { scanForInjection, type InjectionScan } from '@corpus/security'
 
 export interface AnswerSearchRequest {
   tenantId: string
   query: string
-  zone: 'EXTERNAL' | 'INTERNAL'
+  /** Which bot is asking, from the channel — not the caller's security zone. */
+  compartment: AnswerCompartment
   allowedClassifications: readonly Classification[]
+  /** Whether the reader holds a verified account. */
+  verifiedAccount: boolean
   onDate: DateOnly
   limit: number
   category?: string
@@ -32,6 +40,7 @@ export interface CuratedAnswer {
   category: string
   audience: AnswerAudience
   classification: Classification
+  requiresAccount: boolean
   score: number
   termMatches: number
   /** Share of the query's distinct stems this answer covers, 0..1. */
@@ -71,7 +80,8 @@ export class D1AnswerSearchService implements AnswerSearchService {
     try {
       hits = await this.deps.answers.search(scope, {
         query: request.query,
-        zone: request.zone,
+        compartment: request.compartment,
+        verifiedAccount: request.verifiedAccount,
         allowedClassifications: request.allowedClassifications,
         onDate: request.onDate,
         limit: request.limit,
@@ -90,7 +100,8 @@ export class D1AnswerSearchService implements AnswerSearchService {
       strategy = 'like'
       hits = await this.deps.answers.searchFallback(scope, {
         terms,
-        zone: request.zone,
+        compartment: request.compartment,
+        verifiedAccount: request.verifiedAccount,
         allowedClassifications: request.allowedClassifications,
         onDate: request.onDate,
         limit: request.limit,
@@ -107,15 +118,29 @@ export class D1AnswerSearchService implements AnswerSearchService {
       })
     }
 
-    // A defence-in-depth restatement of the SQL audience filter: an EXTERNAL
-    // caller must never see an INTERNAL-only row, whatever its classification.
-    const inZone = authorised.filter((hit) =>
-      request.zone === 'EXTERNAL' ? hit.audience !== 'INTERNAL' : hit.audience !== 'EXTERNAL',
+    // Defence-in-depth restatements of the SQL filters. An EXTERNAL caller must
+    // never see an INTERNAL-only row whatever its classification, and a reader
+    // with no verified account must never see an account-gated row.
+    const inCompartment = authorised.filter((hit) =>
+      request.compartment === 'EXTERNAL'
+        ? hit.audience !== 'INTERNAL'
+        : hit.audience !== 'EXTERNAL',
     )
-    if (inZone.length !== authorised.length) {
-      this.deps.logger.error('answer search returned a row outside the caller zone', {
+    if (inCompartment.length !== authorised.length) {
+      this.deps.logger.error('answer search returned a row outside the caller compartment', {
         action: 'knowledge.answer.search',
         result: 'audience_mismatch',
+        tenantId: request.tenantId,
+      })
+    }
+
+    const inZone = request.verifiedAccount
+      ? inCompartment
+      : inCompartment.filter((hit) => !hit.requiresAccount)
+    if (inZone.length !== inCompartment.length) {
+      this.deps.logger.error('answer search returned an account-gated row to an unverified reader', {
+        action: 'knowledge.answer.search',
+        result: 'account_gate_mismatch',
         tenantId: request.tenantId,
       })
     }
@@ -134,6 +159,7 @@ export class D1AnswerSearchService implements AnswerSearchService {
           category: hit.category,
           audience: hit.audience,
           classification: hit.classification,
+          requiresAccount: hit.requiresAccount,
           score: strategy === 'fts' ? -Number(hit.rank ?? 0) : 0,
           termMatches,
           coverage: stems.size === 0 ? 0 : termMatches / stems.size,

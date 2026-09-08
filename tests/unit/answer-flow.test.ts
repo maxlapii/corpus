@@ -12,6 +12,7 @@ import {
   buildAnswerSearchText,
   canTransitionAnswer,
   isAnswerAudience,
+  resolveRequiresAccount,
   validateAnswerDraft,
   type AnswerAudience,
   type Classification,
@@ -84,6 +85,36 @@ describe('curated answer validation', () => {
     expect(
       codesOf(validateAnswerDraft({ ...base, effectiveFrom: '2026-06-01', effectiveTo: '2026-01-01' })),
     ).toContain('BEFORE_START')
+  })
+})
+
+describe('the verified-account gate', () => {
+  it('defaults an internal answer to requiring an account', () => {
+    expect(resolveRequiresAccount('INTERNAL', undefined)).toBe(true)
+  })
+
+  it('never gates an external-audience answer, which has no account to check', () => {
+    for (const audience of ['EXTERNAL', 'BOTH'] as const) {
+      for (const requested of [true, false, undefined]) {
+        expect(resolveRequiresAccount(audience, requested), `${audience}/${requested}`).toBe(false)
+      }
+    }
+  })
+
+  it('lets an internal answer drop the requirement only when PUBLIC', () => {
+    const ungated = { ...base, requiresAccount: false }
+    expect(validateAnswerDraft({ ...ungated, classification: 'PUBLIC' })).toEqual([])
+    for (const classification of ['INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'] as const) {
+      expect(codesOf(validateAnswerDraft({ ...ungated, classification }))).toContain(
+        'UNGATED_MUST_BE_PUBLIC',
+      )
+    }
+  })
+
+  it('does not complain about a gated answer at any classification', () => {
+    for (const classification of ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'] as const) {
+      expect(validateAnswerDraft({ ...base, requiresAccount: true, classification })).toEqual([])
+    }
   })
 })
 

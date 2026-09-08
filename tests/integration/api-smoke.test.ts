@@ -18,7 +18,7 @@ describe('API smoke', () => {
     expect(status).toBe(200)
     expect(body.status).toBe('ok')
     expect(body.database).toBe('ok')
-    expect(body.migrationsApplied).toBe(8)
+    expect(body.migrationsApplied).toBe(9)
   })
 
   it('never exposes secrets through /health', async () => {

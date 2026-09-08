@@ -1,9 +1,16 @@
 /**
  * CORPUS Internal HR Bot (CLAUDE.md §32, §36).
  *
- * Requires a verified identity. An unlinked Telegram id can do exactly one
- * thing: start the e-mail verification flow. It cannot reach any HR tool, and
- * it never learns whether an e-mail it guessed belongs to a real employee.
+ * Anything personal, credential-bearing or classified requires a verified
+ * identity: an unlinked Telegram id can reach no HR tool, no document and no
+ * employee record, and it never learns whether an e-mail it guessed belongs to
+ * a real employee.
+ *
+ * It can, however, be answered from curated answers an author has explicitly
+ * published as general staff information ("who approves leave", "how do I
+ * reach IT"). Those are PUBLIC-classified and flagged `requires_account = 0`,
+ * so the concession is one an author makes per answer rather than a hole in the
+ * zone. Everything else still ends at the verification prompt.
  */
 
 import { prefixedId, safeParse, email as emailValidator, type Logger } from '@corpus/shared'
@@ -109,6 +116,10 @@ const UNVERIFIED_HELP = [
   'Your Telegram username alone does not identify you, so this step is required.',
 ].join('\n')
 
+const UNVERIFIED_FOOTER =
+  'That is general information. For anything about your own record — leave, ' +
+  'payslips, personal details — send /verify your.name@company.com to link your account.'
+
 const VERIFIED_HELP = [
   'I can help with:',
   '• /balance — your leave balance',
@@ -177,15 +188,28 @@ export class InternalBot {
     })
 
     if (!resolution.ok) {
+      const general =
+        update.command === 'start' || update.command === 'help'
+          ? null
+          : await this.generalAnswerFor(update, requestId)
+
       await this.deps.securityEvents.record({
         tenantId: this.deps.tenantId,
         eventType: 'UNKNOWN_USER',
         channel: 'TELEGRAM_INTERNAL',
         telegramId: update.telegramUserId,
-        summary: `Unverified Telegram user contacted the internal bot (${resolution.reason})`,
+        summary: general
+          ? 'Unverified Telegram user answered from general staff information'
+          : `Unverified Telegram user contacted the internal bot (${resolution.reason})`,
         requestId,
       })
-      await this.deps.client.sendMessage(update.chatId, unverifiedMessage(resolution.reason))
+
+      await this.deps.client.sendMessage(
+        update.chatId,
+        general
+          ? `${general}\n\n${UNVERIFIED_FOOTER}`
+          : unverifiedMessage(resolution.reason),
+      )
       return
     }
 
@@ -226,6 +250,41 @@ export class InternalBot {
       intent: reply.intent,
       tools: reply.toolCalls.map((t) => `${t.name}:${t.decision}`).join(','),
     })
+  }
+
+  /**
+   * The general-information path for an unlinked Telegram id.
+   *
+   * The identity is anonymous, so the gateway hands back a PUBLIC ceiling, and
+   * `answerFromCuratedOnly` reaches nothing but curated answers. A personal
+   * question therefore falls through to null and gets the verification prompt,
+   * which is the behaviour we want without having to enumerate "personal".
+   */
+  private async generalAnswerFor(
+    update: NormalisedUpdate,
+    requestId: string,
+  ): Promise<string | null> {
+    const identity = await this.deps.identityResolver.anonymous({
+      tenantId: this.deps.tenantId,
+      channel: 'TELEGRAM_INTERNAL',
+      rawSubject: update.telegramUserId,
+      telegramUserId: update.telegramUserId,
+    })
+
+    const curated = await this.deps.orchestrator.answerFromCuratedOnly({
+      identity,
+      message: commandToNaturalLanguage(update),
+      requestId,
+    })
+    if (!curated) return null
+
+    this.deps.logger.info('internal bot answered an unverified user from general information', {
+      action: 'telegram.internal',
+      result: 'general',
+      channel: 'TELEGRAM_INTERNAL',
+      requestId,
+    })
+    return curated.text
   }
 
   private async handleVerifyRequest(update: NormalisedUpdate, requestId: string): Promise<void> {

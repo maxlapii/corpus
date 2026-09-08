@@ -32,6 +32,7 @@ interface CuratedAnswer {
   audience: Audience
   classification: Classification
   status: Status
+  requiresAccount: boolean
   effectiveFrom: string
   effectiveTo: string | null
   phrases: string[]
@@ -55,6 +56,7 @@ interface PreviewMatch {
   classification: Classification
   coverage: number
   termMatches: number
+  requiresAccount: boolean
   wouldServe: boolean
 }
 
@@ -84,6 +86,7 @@ const emptyDraft = (): DraftState => ({
   audience: 'INTERNAL',
   classification: 'INTERNAL',
   status: 'DRAFT',
+  requiresAccount: true,
   phrases: '',
   effectiveFrom: '',
   effectiveTo: '',
@@ -98,6 +101,7 @@ interface DraftState {
   audience: Audience
   classification: Classification
   status: Status
+  requiresAccount: boolean
   /** One phrasing per line — the plainest editor for a short list. */
   phrases: string
   effectiveFrom: string
@@ -182,6 +186,7 @@ export default function TrainingPage() {
       audience: answer.audience,
       classification: answer.classification,
       status: answer.status,
+      requiresAccount: answer.requiresAccount,
       phrases: answer.phrases.join('\n'),
       effectiveFrom: answer.effectiveFrom,
       effectiveTo: answer.effectiveTo ?? '',
@@ -198,6 +203,7 @@ export default function TrainingPage() {
       // A question that reached the external bot must be answerable publicly.
       audience: question.channel === 'TELEGRAM_EXTERNAL' ? 'EXTERNAL' : 'INTERNAL',
       classification: question.channel === 'TELEGRAM_EXTERNAL' ? 'PUBLIC' : 'INTERNAL',
+      requiresAccount: question.channel !== 'TELEGRAM_EXTERNAL',
       sourceUnansweredId: question.id,
     })
     setSubmitError(null)
@@ -205,7 +211,8 @@ export default function TrainingPage() {
   }, [])
 
   const classificationConflict =
-    reachesExternal(draft.audience) && draft.classification !== 'PUBLIC'
+    (reachesExternal(draft.audience) && draft.classification !== 'PUBLIC') ||
+    (!draft.requiresAccount && draft.classification !== 'PUBLIC')
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -221,6 +228,7 @@ export default function TrainingPage() {
       audience: draft.audience,
       classification: draft.classification,
       status: draft.status,
+      requiresAccount: draft.requiresAccount,
       phrases: phraseLines(draft.phrases).slice(0, MAX_PHRASES),
     }
     if (draft.effectiveFrom) body.effectiveFrom = draft.effectiveFrom
@@ -442,6 +450,7 @@ export default function TrainingPage() {
                     <th>Question</th>
                     <th>Audience</th>
                     <th>Classification</th>
+                    <th>Account</th>
                     <th>Status</th>
                     <th>Phrasings</th>
                     <th>Updated</th>
@@ -457,6 +466,9 @@ export default function TrainingPage() {
                       </td>
                       <td style={cellStyle}>
                         <Badge value={answer.classification} />
+                      </td>
+                      <td style={cellStyle}>
+                        <Badge value={answer.requiresAccount ? 'REQUIRED' : 'NOT NEEDED'} />
                       </td>
                       <td style={cellStyle}>
                         <Badge value={answer.status} />
@@ -610,11 +622,33 @@ function AnswerForm({
             </select>
             {conflict ? (
               <div className="notice error" style={{ marginTop: 8, fontSize: 13 }}>
-                An answer the external bot can serve must be PUBLIC.
+                Only a PUBLIC answer can reach the external bot, or someone without a verified
+                account.
               </div>
             ) : null}
           </div>
         </div>
+
+        {draft.audience === 'INTERNAL' ? (
+          <div className="field">
+            <label htmlFor="answer-account">
+              <input
+                id="answer-account"
+                type="checkbox"
+                checked={!draft.requiresAccount}
+                disabled={draft.classification !== 'PUBLIC'}
+                onChange={(e) => setDraft({ ...draft, requiresAccount: !e.target.checked })}
+                style={{ marginRight: 8 }}
+              />
+              Answer this without a verified account
+            </label>
+            <div className="hint">
+              {draft.classification === 'PUBLIC'
+                ? 'General staff information — someone messaging the internal bot gets this before linking their account. Leave off for anything personal or credential-bearing.'
+                : 'Only a PUBLIC answer can be given without an account. Reclassify to PUBLIC to enable this.'}
+            </div>
+          </div>
+        ) : null}
 
         <div className="form-row">
           <div className="field">
@@ -762,6 +796,7 @@ function PreviewPanel() {
                 <div className="toolbar" style={{ marginBottom: 6 }}>
                   <Badge value={match.wouldServe ? 'WOULD SERVE' : 'BELOW THRESHOLD'} />
                   <Badge value={match.classification} />
+                  {match.requiresAccount ? <Badge value="ACCOUNT REQUIRED" /> : null}
                   <span className="hint">
                     {Math.round(match.coverage * 100)}% of your words matched
                   </span>

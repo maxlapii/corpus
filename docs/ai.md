@@ -331,7 +331,8 @@ sequences, budgets and frames; it holds no authority of its own.
    ▼
  5. Curated answer      skipped entirely when risk === 'RESTRICTED'
    │                    PolicyGateway.authorize(knowledge.answer:search)
-   │                       → classification ceiling; zone → audience
+   │                       → classification ceiling
+   │                    compartment ← channel (not zone); verifiedAccount ← identity.kind
    │                    answerSearch.search(...) → best match
    │                    coverage ≥ 0.67 AND termMatches ≥ 2 ?
    │                       yes → response filter → persist → RETURN.
@@ -761,6 +762,20 @@ register it, and that refusal is the intended answer.
 
 ---
 
+### 5.1 `answerFromCuratedOnly`
+
+A second, deliberately narrow entry point used by the internal bot for a Telegram id that has not
+been linked to an employee. It runs the AI budget, the gateway check and the curated lookup, and
+nothing else — no tool planning, no document retrieval, no provider call.
+
+That is what makes "general questions need no account" safe to offer: the path has no way to reach a
+tool, so anything person-specific finds nothing and the caller falls back to the verification
+prompt. There is no list of "personal" topics to keep in step with reality.
+
+Returns `null` when nothing general matches. The exchange is persisted like any other turn.
+
+---
+
 ## 11. What the AI can never do
 
 Structural guarantees, each with the code that provides it. None of these
@@ -803,7 +818,7 @@ behaviour — but every entry above holds even if the model ignores all of it.
 | `tests/security/acceptance.test.ts` | The eight §44 acceptance tests, six of which run through `AIOrchestrator.handle`. |
 | `tests/integration/rag-permission-filtering.test.ts` | Classification filtering on the retrieval path used by `search_hr_policy`. |
 | `tests/security/bot-training.test.ts` | Curated answers: audience and classification isolation, status and effective dates, the schema CHECK, tenant isolation, who may author, and that a `RESTRICTED`-risk intent still reaches the gate rather than being short-circuited by a matching answer. |
-| `tests/unit/answer-flow.test.ts` | The audience/classification invariant and the status machine, in isolation. |
+| `tests/unit/answer-flow.test.ts` | The audience/classification invariant, the verified-account gate and the status machine, in isolation. |
 
 All of these run against `MockAIProvider`, so no API key is required.
 
