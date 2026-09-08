@@ -20,6 +20,7 @@ export const RESOURCE_TYPES = [
   'offer',
   'knowledge.document',
   'knowledge.chunk',
+  'knowledge.answer',
   'report',
   'audit',
   'security.event',

@@ -320,6 +320,43 @@ export const POLICY_RULES: Readonly<Record<RuleKey, PolicyRule>> = {
     grants: [{ permission: 'policy.delete', ownership: 'ANY', maxClassification: 'RESTRICTED' }],
   },
 
+  // --- Curated bot answers
+  // Reachable from EXTERNAL, so the anonymous grant is capped at PUBLIC. That
+  // ceiling — not the audience column alone — is what stops a misfiled answer
+  // reaching a candidate.
+  // Ordered widest-first, unlike the chunk ladder above. The gateway stops at
+  // the first satisfied grant, so an ascending ladder would cap SYSTEM_ADMIN at
+  // PUBLIC — it holds every permission, `faq.read.public` included.
+  'knowledge.answer:search': {
+    zones: BOTH_ZONES,
+    grants: [
+      { permission: 'policy.read.restricted', ownership: 'ANY', maxClassification: 'RESTRICTED' },
+      { permission: 'policy.read.confidential', ownership: 'ANY', maxClassification: 'CONFIDENTIAL' },
+      { permission: 'faq.read', ownership: 'ANY', maxClassification: 'INTERNAL' },
+      { permission: 'faq.read.public', ownership: 'ANY', maxClassification: 'PUBLIC' },
+    ],
+  },
+  'knowledge.answer:list': {
+    zones: INTERNAL_ONLY,
+    grants: [{ permission: 'faq.manage', ownership: 'ANY', maxClassification: 'RESTRICTED' }],
+  },
+  'knowledge.answer:read': {
+    zones: INTERNAL_ONLY,
+    grants: [{ permission: 'faq.manage', ownership: 'ANY', maxClassification: 'RESTRICTED' }],
+  },
+  'knowledge.answer:create': {
+    zones: INTERNAL_ONLY,
+    grants: [{ permission: 'faq.manage', ownership: 'ANY', maxClassification: 'RESTRICTED' }],
+  },
+  'knowledge.answer:update': {
+    zones: INTERNAL_ONLY,
+    grants: [{ permission: 'faq.manage', ownership: 'ANY', maxClassification: 'RESTRICTED' }],
+  },
+  'knowledge.answer:delete': {
+    zones: INTERNAL_ONLY,
+    grants: [{ permission: 'faq.manage', ownership: 'ANY', maxClassification: 'RESTRICTED' }],
+  },
+
   // --- Oversight
   'report:read': {
     zones: INTERNAL_ONLY,

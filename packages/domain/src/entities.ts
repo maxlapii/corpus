@@ -1,6 +1,7 @@
 /** Domain entity shapes and their state machines. */
 
 import type { Classification } from './classification.js'
+import type { AnswerAudience, AnswerStatus } from './answer-flow.js'
 import type { DateOnly } from '@corpus/shared'
 
 // --- Tenancy
@@ -334,6 +335,25 @@ export interface DocumentChunk {
   content: string
 }
 
+export interface KnowledgeAnswer {
+  id: string
+  tenantId: string
+  question: string
+  answer: string
+  category: string
+  audience: AnswerAudience
+  classification: Classification
+  status: AnswerStatus
+  effectiveFrom: DateOnly
+  effectiveTo: DateOnly | null
+  phrases: string[]
+  sourceUnansweredId: string | null
+  createdAt: string
+  updatedAt: string
+  createdBy: string | null
+  updatedBy: string | null
+}
+
 // --- Conversations
 
 export interface Conversation {
@@ -376,6 +396,8 @@ export interface UnansweredQuestion {
   channel: string
   askedByUserId: string | null
   resolvedAt: string | null
+  resolvedAnswerId: string | null
+  resolvedByUserId: string | null
   createdAt: string
 }
 

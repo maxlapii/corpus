@@ -1,11 +1,19 @@
 /**
- * Generates `migrations/0006_rbac_reference.sql` from the canonical role and
- * permission tables in `@corpus/domain`.
+ * Generates the RBAC reference migration from the canonical role and permission
+ * tables in `@corpus/domain`.
  *
  * Run with `npx tsx scripts/generate-rbac-migration.ts` after changing roles or
  * permissions. `tests/integration/rbac-consistency.test.ts` fails if the
  * committed migration and the code ever drift apart.
+ *
+ * `TARGET` is a NEW file each time the permission set changes, never a rewrite
+ * of the previous one: a migration runner records what it has applied by name,
+ * so editing an applied file leaves every existing database on the old grants.
+ * The statements below fully replace the reference tables, so a fresh database
+ * and an upgraded one converge on the same rows.
  */
+
+const TARGET = 'migrations/0008_rbac_reference.sql'
 
 import { writeFileSync } from 'node:fs'
 import { PERMISSIONS, ROLES, ROLE_PERMISSIONS } from '@corpus/domain'
@@ -54,6 +62,9 @@ const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   'policy.read.restricted': 'Read RESTRICTED knowledge documents',
   'policy.create': 'Create knowledge documents',
   'policy.update': 'Update knowledge documents',
+  'faq.read.public': 'Read PUBLIC curated bot answers as an anonymous candidate',
+  'faq.read': 'Read curated bot answers for the internal zone',
+  'faq.manage': 'Author, publish and archive curated bot answers',
   'policy.delete': 'Delete or archive knowledge documents',
   'report.read': 'Read HR reports and analytics',
   'audit.read': 'Read the audit trail',
@@ -64,7 +75,7 @@ const PERMISSION_DESCRIPTIONS: Record<string, string> = {
 const q = (s: string) => `'${s.replace(/'/g, "''")}'`
 
 const lines: string[] = [
-  '-- CORPUS 0006 — RBAC reference data.',
+  `-- CORPUS ${TARGET.replace(/^migrations\//, '').replace(/_.*$/, '')} — RBAC reference data.`,
   '--',
   '-- GENERATED FILE. Do not edit by hand.',
   '-- Source of truth: packages/domain/src/roles.ts',
@@ -101,7 +112,7 @@ for (const role of ROLES) {
 lines.push(grants.join(',\n') + ';')
 lines.push('')
 
-writeFileSync('migrations/0006_rbac_reference.sql', lines.join('\n'), 'utf8')
+writeFileSync(TARGET, lines.join('\n'), 'utf8')
 console.log(
-  `Wrote migrations/0006_rbac_reference.sql — ${ROLES.length} roles, ${PERMISSIONS.length} permissions, ${grants.length} grants`,
+  `Wrote ${TARGET} — ${ROLES.length} roles, ${PERMISSIONS.length} permissions, ${grants.length} grants`,
 )

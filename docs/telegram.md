@@ -16,6 +16,7 @@ It is written against the source. Where `CLAUDE.md` asks for something the code 
 8. [Update normalisation and what is not trusted](#8-update-normalisation-and-what-is-not-trusted)
 9. [External bot](#9-external-bot)
 10. [Internal bot](#10-internal-bot)
+10a. [Curated answers (bot training)](#10a-curated-answers-bot-training)
 11. [Identity verification flow](#11-identity-verification-flow)
 12. [Identity resolution on every later message](#12-identity-resolution-on-every-later-message)
 13. [Error policy: always 200 after the secret check](#13-error-policy-always-200-after-the-secret-check)
@@ -295,7 +296,8 @@ get_hiring_process()  submit_application()  get_application_status()
 3. Per-user rate limit (`tg:ext:`).
 4. Identity: `candidates.findByTelegramUserId()`, then `identityResolver.anonymous({ channel: 'TELEGRAM_EXTERNAL', telegramUserId, candidateId? })`. A matched candidate id lets the candidate see *their own* application; it never widens permissions.
 5. `/start` and `/help` are answered from constants with no model call.
-6. Everything else is mapped to natural language and passed to the orchestrator.
+6. Everything else is mapped to natural language and passed to the orchestrator, which checks the
+   curated answers first — see "Curated answers" below.
 
 ### Commands
 
@@ -330,7 +332,8 @@ Each turn is logged with `action: 'telegram.external'`, the intent, and `name:de
 4. `/verify` and `/code` are handled *before* identity resolution — they are the only capabilities an unverified id has.
 5. `identityResolver.fromTelegramInternal()`. On failure: an `UNKNOWN_USER` security event plus a reason-appropriate message, and the turn ends. No tool, no model call, no conversation row.
 6. `/start` and `/help` for a verified user return `Hello <employee name>` plus the capability list.
-7. Everything else goes to the orchestrator with the resolved `UserIdentity`.
+7. Everything else goes to the orchestrator with the resolved `UserIdentity`, which checks the
+   curated answers first — see "Curated answers" below.
 
 ### Commands for a verified employee
 
@@ -364,6 +367,44 @@ built from `citation.documentName`, optional `section` and `version`. Only chunk
 | `LINK_REVOKED` | `Your Telegram link has been revoked. Please contact HR.` |
 | `EMPLOYEE_INACTIVE`, `USER_DISABLED` | `Your account is not active. Please contact HR.` |
 | anything else (`NOT_LINKED`, `EMPLOYEE_MISSING`) | The verification instructions |
+
+---
+
+## 10a. Curated answers (bot training)
+
+Both bots can answer from question/answer pairs an HR author publishes in the dashboard under
+**Knowledge → Bot training**. The orchestrator consults them before planning any tool call, and
+serves a match **verbatim** — no provider call, no paraphrase, no cost.
+
+| | External bot | Internal bot |
+|---|---|---|
+| Audiences it may serve | `EXTERNAL`, `BOTH` | `INTERNAL`, `BOTH` |
+| Classification ceiling | `PUBLIC` only | The caller's own ceiling, from the gateway |
+| Typical use | Hiring process, remote-work policy, what to bring to an interview | Payroll portal, who approves leave, IT self-service |
+
+This is the only knowledge path the external bot has. Policy documents remain INTERNAL and
+unreachable from the public zone, which is exactly why a candidate-facing answer has to be written
+deliberately rather than retrieved: an author with `faq.manage` decides what candidates may be told.
+
+Behaviour worth knowing when reasoning about a reply:
+
+- Only `ACTIVE`, in-date answers are served. A `DRAFT` is invisible to both bots, which makes the
+  draft state a genuine review step.
+- A match must clear a relevance threshold (≥ 0.67 stem coverage, ≥ 2 matching stems). Below it the
+  bot falls through to its normal tools, so an adjacent question is not answered with the wrong
+  approved text.
+- Adding **training phrasings** to an answer is what widens the ways the bot recognises it. A
+  phrasing that is not listed is a phrasing the bot will not match.
+- Salary-shaped questions are never answered this way. `RESTRICTED`-risk intents skip the curated
+  path and go to the PolicyGateway, which refuses and writes an audited `DENY`.
+- When neither a curated answer nor an authorised tool can answer, the internal bot records the
+  question in the training backlog, which is what HR works through in the dashboard.
+
+Authors can dry-run either bot from **Test a bot** on the training page without publishing anything;
+the external preview is capped at `PUBLIC` so it shows what a candidate would see, not what the
+author can see.
+
+Full mechanics: `docs/rag.md` §14. Security properties: `docs/security.md`, "Curated bot answers".
 
 ---
 

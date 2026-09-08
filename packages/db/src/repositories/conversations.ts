@@ -188,17 +188,27 @@ export class ConversationRepository {
         channel: String(r.channel),
         askedByUserId: r.asked_by_user_id ? String(r.asked_by_user_id) : null,
         resolvedAt: r.resolved_at ? String(r.resolved_at) : null,
+        resolvedAnswerId: r.resolved_answer_id ? String(r.resolved_answer_id) : null,
+        resolvedByUserId: r.resolved_by_user_id ? String(r.resolved_by_user_id) : null,
         createdAt: String(r.created_at),
       })),
       total,
     }
   }
 
-  async resolveUnanswered(scope: TenantScope, id: string): Promise<void> {
-    await this.db.run(
-      'UPDATE unanswered_questions SET resolved_at = ? WHERE tenant_id = ? AND id = ?',
-      [nowIso(), scope.tenantId, id],
+  /** `answerId` links the gap to the curated answer that now covers it. */
+  async resolveUnanswered(
+    scope: TenantScope,
+    id: string,
+    link: { answerId?: string | null; actorUserId?: string | null } = {},
+  ): Promise<boolean> {
+    const result = await this.db.run(
+      `UPDATE unanswered_questions
+          SET resolved_at = ?, resolved_answer_id = ?, resolved_by_user_id = ?
+        WHERE tenant_id = ? AND id = ?`,
+      [nowIso(), link.answerId ?? null, link.actorUserId ?? null, scope.tenantId, id],
     )
+    return result.meta.changes === 1
   }
 
   async createTicket(

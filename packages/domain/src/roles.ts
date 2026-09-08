@@ -57,6 +57,11 @@ export const PERMISSIONS = [
   'policy.update',
   'policy.delete',
 
+  // Curated bot answers (dashboard-authored bot training)
+  'faq.read.public',
+  'faq.read',
+  'faq.manage',
+
   // Reporting and oversight
   'report.read',
   'audit.read',
@@ -84,6 +89,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'leave.create.self',
     'leave.cancel.self',
     'policy.read',
+    'faq.read',
     'job.read.internal',
     'job.read.public',
   ],
@@ -97,6 +103,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'leave.cancel.self',
     'leave.approve.team',
     'policy.read',
+    'faq.read',
     'job.read.internal',
     'job.read.public',
     'interview.read',
@@ -119,6 +126,8 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'policy.read.confidential',
     'policy.create',
     'policy.update',
+    'faq.read',
+    'faq.manage',
     'job.read.public',
     'job.read.internal',
     'job.create',
@@ -153,6 +162,8 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'policy.create',
     'policy.update',
     'policy.delete',
+    'faq.read',
+    'faq.manage',
     'job.read.public',
     'job.read.internal',
     'job.create',
@@ -179,6 +190,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
 /** For an unauthenticated caller: the external bot and the careers site. */
 export const PUBLIC_PERMISSIONS: readonly Permission[] = [
   'job.read.public',
+  'faq.read.public',
   'candidate.create.public',
   'application.create.public',
   'application.read.self',

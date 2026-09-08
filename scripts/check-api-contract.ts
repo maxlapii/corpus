@@ -23,6 +23,7 @@ const MOUNTS: Record<string, string> = {
   candidateRoutes: '/candidates',
   applicationRoutes: '/applications',
   knowledgeRoutes: '/policies',
+  knowledgeAnswerRoutes: '/knowledge/answers',
   reportRoutes: '/reports',
   auditRoutes: '/audit',
   securityRoutes: '/security',

@@ -38,6 +38,7 @@ export interface SeedResult {
   leaveTypeIds: Record<string, string>
   jobIds: Record<string, string>
   documentIds: Record<string, string>
+  answerIds: Record<string, string>
 }
 
 const DEPARTMENTS = [
@@ -287,6 +288,65 @@ const HOLIDAYS = [
   { month: 12, day: 25, name: 'Company Winter Holiday' },
 ]
 
+
+/**
+ * Curated bot answers, so both bots have something trained out of the box.
+ * EXTERNAL/BOTH entries are PUBLIC by construction — the same rule the schema
+ * and `validateAnswerDraft` enforce.
+ */
+const CURATED_ANSWERS = [
+  {
+    question: 'How do I apply for a job?',
+    answer:
+      'Ask me to search for openings, then tell me the job code you want. ' +
+      'I will need your full name and e-mail address to submit the application.',
+    category: 'RECRUITMENT',
+    audience: 'EXTERNAL' as const,
+    classification: 'PUBLIC' as const,
+    phrases: ['how to apply', 'where do I send my CV', 'application process', 'can I apply here'],
+  },
+  {
+    question: 'Do you offer remote or hybrid work?',
+    answer:
+      'Some roles are remote-friendly. Each job advert states whether remote work is allowed, ' +
+      'so check the specific opening you are interested in.',
+    category: 'RECRUITMENT',
+    audience: 'EXTERNAL' as const,
+    classification: 'PUBLIC' as const,
+    phrases: ['is this job remote', 'work from home', 'hybrid working', 'remote policy for candidates'],
+  },
+  {
+    question: 'How long does the hiring process take?',
+    answer:
+      'Most hiring decisions are made within four weeks of the closing date. ' +
+      'You will hear from the recruitment team at each stage.',
+    category: 'RECRUITMENT',
+    audience: 'BOTH' as const,
+    classification: 'PUBLIC' as const,
+    phrases: ['how long until I hear back', 'hiring timeline', 'when will I get a response'],
+  },
+  {
+    question: 'How do I reset my payroll portal password?',
+    answer:
+      'Use the "Forgot password" link on the payroll portal sign-in page. ' +
+      'If the reset e-mail does not arrive within ten minutes, contact HR.',
+    category: 'IT',
+    audience: 'INTERNAL' as const,
+    classification: 'INTERNAL' as const,
+    phrases: ['payroll password reset', 'locked out of payroll', 'cannot sign in to payroll'],
+  },
+  {
+    question: 'Who approves my leave request?',
+    answer:
+      'Your direct manager approves leave. If they are unavailable for more than three working days, ' +
+      'HR can approve on their behalf.',
+    category: 'LEAVE',
+    audience: 'INTERNAL' as const,
+    classification: 'INTERNAL' as const,
+    phrases: ['who signs off my leave', 'leave approval chain', 'manager approve holiday'],
+  },
+]
+
 /**
  * Populate a database with the development fixture set.
  * Idempotent enough to re-run on an existing database: existing rows are reused.
@@ -475,7 +535,28 @@ export async function seedDatabase(
     documentIds[document.key] = created.id
   }
 
-  return { tenantId: tenant.id, password, employees, leaveTypeIds, jobIds, documentIds }
+  // --- Curated bot answers
+  const answerIds: Record<string, string> = {}
+  for (const curated of CURATED_ANSWERS) {
+    const existing = await repos.knowledgeAnswers.findByQuestion(scope, curated.question)
+    const created =
+      existing ??
+      (await repos.knowledgeAnswers.create(scope, {
+        question: curated.question,
+        answer: curated.answer,
+        category: curated.category,
+        audience: curated.audience,
+        classification: curated.classification,
+        status: 'ACTIVE',
+        effectiveFrom: `${year - 1}-01-01`,
+        effectiveTo: null,
+        phrases: curated.phrases,
+        actorUserId: null,
+      }))
+    answerIds[curated.question] = created.id
+  }
+
+  return { tenantId: tenant.id, password, employees, leaveTypeIds, jobIds, documentIds, answerIds }
 }
 
 /** Document texts, exposed so the ingestion pipeline can index them. */

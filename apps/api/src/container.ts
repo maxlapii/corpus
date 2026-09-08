@@ -39,7 +39,11 @@ import {
   type RateLimitConfig,
   type RateLimiter,
 } from '@corpus/security'
-import { D1KnowledgeSearchService, DocumentIngestionService } from '@corpus/knowledge'
+import {
+  D1AnswerSearchService,
+  D1KnowledgeSearchService,
+  DocumentIngestionService,
+} from '@corpus/knowledge'
 import {
   AIOrchestrator,
   ALL_TOOLS,
@@ -76,6 +80,7 @@ export interface Container {
   tools: ToolRegistry
   orchestrator: AIOrchestrator
   knowledgeSearch: D1KnowledgeSearchService
+  answerSearch: D1AnswerSearchService
   ingestion: DocumentIngestionService
   externalBotClient: TelegramClient
   internalBotClient: TelegramClient
@@ -138,6 +143,7 @@ export function createContainer(env: WorkerEnv, requestId: string): Container {
   const telegramIdentity = new TelegramIdentityService({ repos, logger })
 
   const knowledgeSearch = new D1KnowledgeSearchService({ knowledge: repos.knowledge, logger })
+  const answerSearch = new D1AnswerSearchService({ answers: repos.knowledgeAnswers, logger })
   const ingestion = new DocumentIngestionService({
     knowledge: repos.knowledge,
     storage,
@@ -159,6 +165,7 @@ export function createContainer(env: WorkerEnv, requestId: string): Container {
     gateway,
     repos,
     knowledgeSearch,
+    answerSearch,
     securityEvents,
     rateLimiter,
     logger,
@@ -191,6 +198,7 @@ export function createContainer(env: WorkerEnv, requestId: string): Container {
     tools,
     orchestrator,
     knowledgeSearch,
+    answerSearch,
     ingestion,
     externalBotClient: new TelegramClient(config.telegram.externalBotToken, { logger }),
     internalBotClient: new TelegramClient(config.telegram.internalBotToken, { logger }),

@@ -62,7 +62,7 @@ depend on.
 
 ## 2. Migrations at a glance
 
-Six forward-only SQL files, applied in filename order. There are no down-migrations.
+Eight forward-only SQL files, applied in filename order. There are no down-migrations.
 
 | File | Purpose | Tables created |
 | --- | --- | --- |
@@ -71,7 +71,9 @@ Six forward-only SQL files, applied in filename order. There are no down-migrati
 | `migrations/0003_recruitment.sql` | Jobs, requirements, candidates, applications, interviews, offers | 7 |
 | `migrations/0004_knowledge.sql` | Documents, versions, chunks, FTS5 index + 3 triggers | 4 (one virtual) |
 | `migrations/0005_security_conversations.sql` | Audit, security events, conversations, tickets, rate limiting, retention | 9 |
-| `migrations/0006_rbac_reference.sql` | **Generated** reference data: roles, permissions, grants | 0 (data only) |
+| `migrations/0006_rbac_reference.sql` | **Generated** reference data: roles, permissions, grants (superseded by 0008) | 0 (data only) |
+| `migrations/0007_knowledge_answers.sql` | Curated bot answers, training phrasings, FTS5 index + 3 triggers | 3 (one virtual) |
+| `migrations/0008_rbac_reference.sql` | **Generated** reference data, reissued for the `faq.*` permissions | 0 (data only) |
 
 `tests/integration/schema.test.ts` asserts that all six apply cleanly to a real SQLite
 engine, that re-running is a no-op, and that every one of the 39 tables exists.
@@ -168,13 +170,46 @@ copy in step: changing a document's classification issues a matching
 | `rate_limit_counters` | Durable limiter fallback | See [§12](#12-rate-limit-counters) |
 | `retention_policies` | Retention bookkeeping | Seeded with six rows; see [§13](#13-retention-policies-and-pruning) |
 
-### 3.6 `0006_rbac_reference.sql` — generated reference data
+### 3.6 `0006_rbac_reference.sql` / `0008_rbac_reference.sql` — generated reference data
 
-Data only: 5 roles, 40 permissions and the full role→permission grant matrix, written by
+Data only: 5 roles, 43 permissions and the full role→permission grant matrix, written by
 `scripts/generate-rbac-migration.ts` from `packages/domain/src/roles.ts`. `SYSTEM_ADMIN` is
 fully enumerated rather than wildcarded, "so every grant stays visible in the audit trail".
 Drift between code and migration is a test failure — see
 [§14](#14-migration-tooling).
+
+The generator writes a **new numbered file** each time the permission set changes, rather than
+rewriting the previous one. A migration runner records what it has applied by filename, so editing
+an applied file would silently leave every existing database on the old grants. Each generated file
+replaces the reference tables wholesale (`INSERT OR REPLACE` for roles and permissions, `DELETE`
+then `INSERT` for grants), so a fresh database and an upgraded one converge on identical rows.
+`0008` is the current one; bump `TARGET` in the generator for the next change.
+
+### 3.7 `0007_knowledge_answers.sql` — curated bot answers
+
+| Table | Purpose | Notes |
+|---|---|---|
+| `knowledge_answers` | One approved question/answer pair | `audience` ∈ {EXTERNAL, INTERNAL, BOTH}, `classification`, `status` ∈ {DRAFT, ACTIVE, ARCHIVED}, effective dates, `search_text` |
+| `knowledge_answer_phrases` | Alternative phrasings the bot should recognise | Unique per `(answer_id, phrase)` |
+| `knowledge_answers_fts` | FTS5 external-content index over `search_text` + `answer` | Kept in step by three triggers, mirroring `document_chunks_fts` |
+
+Two CHECK constraints carry security weight:
+
+```sql
+CHECK (audience = 'INTERNAL' OR classification = 'PUBLIC')
+CHECK (effective_to IS NULL OR effective_from <= effective_to)
+```
+
+The first is the last line of defence for the public bot: anything a candidate can be served is
+`PUBLIC` at rest, whatever the application layer believes.
+`tests/security/bot-training.test.ts` inserts straight through the repository to prove the
+constraint holds on its own.
+
+`search_text` is the question plus every training phrasing, denormalised so one FTS row covers every
+way a person might ask. The repository rebuilds it on any phrase change.
+
+The migration also adds `resolved_answer_id` and `resolved_by_user_id` to `unanswered_questions`,
+linking a gap the bot had to the curated answer that now covers it.
 
 ---
 

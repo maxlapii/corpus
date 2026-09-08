@@ -13,6 +13,7 @@ import {
   PositionRepository,
 } from './employees.js'
 import { KnowledgeRepository } from './knowledge.js'
+import { KnowledgeAnswerRepository } from './knowledge-answers.js'
 import {
   HolidayRepository,
   LeaveBalanceRepository,
@@ -56,6 +57,7 @@ export interface Repositories {
   interviews: InterviewRepository
   offers: OfferRepository
   knowledge: KnowledgeRepository
+  knowledgeAnswers: KnowledgeAnswerRepository
   audit: AuditRepository
   securityEvents: SecurityEventRepository
   conversations: ConversationRepository
@@ -83,6 +85,7 @@ export function createRepositories(db: DatabaseService): Repositories {
     interviews: new InterviewRepository(db),
     offers: new OfferRepository(db),
     knowledge: new KnowledgeRepository(db),
+    knowledgeAnswers: new KnowledgeAnswerRepository(db),
     audit: new AuditRepository(db),
     securityEvents: new SecurityEventRepository(db),
     conversations: new ConversationRepository(db),
@@ -93,6 +96,7 @@ export * from './audit.js'
 export * from './conversations.js'
 export * from './employees.js'
 export * from './knowledge.js'
+export * from './knowledge-answers.js'
 export * from './leave.js'
 export * from './mappers.js'
 export * from './recruitment.js'

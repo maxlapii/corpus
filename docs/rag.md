@@ -30,7 +30,8 @@ The governing invariant applies here in a specific form (§24):
 11. [Limits and costs](#11-limits-and-costs)
 12. [Tests](#12-tests)
 13. [Migration path to vector and hybrid search](#13-migration-path-to-vector-and-hybrid-search)
-14. [Limitations](#14-limitations)
+14. [Curated bot answers](#14-curated-bot-answers)
+15. [Limitations](#15-limitations)
 
 ---
 
@@ -51,8 +52,13 @@ The governing invariant applies here in a specific form (§24):
 | HTTP surface (`/policies*`) | `apps/api/src/routes/knowledge.ts` (mounted in `apps/api/src/app.ts`) |
 | AI tool | `search_hr_policy` in `packages/ai/src/tools/internal-self.ts` |
 | Object storage for originals | `packages/db/src/storage.ts` |
+| Curated answers: domain rules | `packages/domain/src/answer-flow.ts` |
+| Curated answers: retrieval service | `packages/knowledge/src/answer-service.ts` |
+| Curated answers: SQL | `packages/db/src/repositories/knowledge-answers.ts` |
+| Curated answers: tables, FTS5, CHECK constraints | `migrations/0007_knowledge_answers.sql` |
+| Curated answers: HTTP surface (`/knowledge/answers*`) | `apps/api/src/routes/knowledge-answers.ts` |
 | Seed corpus | `scripts/seed-data.ts` |
-| Proof | `tests/integration/rag-permission-filtering.test.ts`, `tests/unit/misc-units.test.ts` |
+| Proof | `tests/integration/rag-permission-filtering.test.ts`, `tests/unit/misc-units.test.ts`, `tests/security/bot-training.test.ts`, `tests/unit/answer-flow.test.ts` |
 
 ---
 
@@ -761,7 +767,141 @@ with `pgvector`, where the same `WHERE` clause remains valid SQL.
 
 ---
 
-## 14. Limitations
+## 14. Curated bot answers
+
+Document retrieval answers "what does the policy say". It cannot answer "what should the bot say
+when someone asks this", because that answer often is not written down anywhere, and because a
+retrieved passage still has to be summarised by a model before a person can read it.
+
+A **curated answer** is the second retrieval source: a question/answer pair an HR author writes in
+the dashboard (**Knowledge → Bot training**) and publishes to a named audience. It is served
+**verbatim, with no model turn at all**.
+
+### 14.1 Why verbatim matters
+
+Serving approved text directly removes the two failure modes §30 exists to prevent: the model cannot
+paraphrase an approved answer into something subtly wrong, and it cannot pad it with a figure nobody
+approved. It also costs nothing — the turn never reaches a provider, which matters on the free tier
+(§37) — and it is deterministic, so the same question gives the same answer every time (§38).
+
+The cost of that is precision. Because there is no model in the loop to judge whether the question
+really matches, the matching threshold has to do that job. See §14.4.
+
+### 14.2 The two access axes
+
+| Column | Values | Decides |
+|---|---|---|
+| `audience` | `EXTERNAL`, `INTERNAL`, `BOTH` | Which bot may serve the answer |
+| `classification` | `PUBLIC` … `RESTRICTED` | Who may read it once inside the internal zone |
+
+The invariant tying them together:
+
+> An answer the external bot can serve must be classified `PUBLIC`.
+
+A candidate talking to the recruitment bot is anonymous — no role, no ceiling above `PUBLIC` — so
+anything reachable from that zone is, by definition, public. The rule is enforced in four
+independent places, deliberately:
+
+1. The dashboard form disables the classification selector for an external audience.
+2. `validateAnswerDraft` rejects the combination before the gateway is consulted.
+3. The `knowledge.answer:create` / `:update` gateway rules apply the usual classification ceiling.
+4. A `CHECK (audience = 'INTERNAL' OR classification = 'PUBLIC')` constraint in migration 0007.
+
+Only the last two are load-bearing; `tests/security/bot-training.test.ts` inserts directly through
+the repository, bypassing 1–3, to prove the schema alone still refuses the row.
+
+### 14.3 The filtered query
+
+Identical in shape to the chunk query in §7.3 — every filter is inside the SQL, so an unauthorised
+answer is never materialised:
+
+```sql
+SELECT a.id, a.question, a.answer, a.classification,
+       bm25(knowledge_answers_fts) AS rank
+  FROM knowledge_answers_fts f
+  JOIN knowledge_answers a ON a.id = f.answer_id
+ WHERE knowledge_answers_fts MATCH ?
+   AND a.tenant_id = ?
+   AND a.audience IN (...)          -- from the verified channel, never the caller
+   AND a.classification IN (...)    -- from the gateway ALLOW decision
+   AND a.status = 'ACTIVE'
+   AND a.effective_from <= ?
+   AND (a.effective_to IS NULL OR a.effective_to >= ?)
+ ORDER BY rank
+ LIMIT ?
+```
+
+`AUDIENCES_FOR_ZONE` maps the zone to the audiences it may see: `EXTERNAL → ['EXTERNAL','BOTH']`,
+`INTERNAL → ['INTERNAL','BOTH']`. An `EXTERNAL`-only answer is therefore invisible internally as
+well — the axis is a compartment, not a privilege ladder.
+
+There is a LIKE fallback with the same filters, for the same reason as §8.5, and
+`D1AnswerSearchService` re-asserts both the classification set and the audience in TypeScript after
+the query. That restatement is not the guard; it is a tripwire that logs an `error` if the SQL ever
+stops matching the intent.
+
+### 14.4 Matching threshold
+
+Every answer is indexed on `search_text` — the canonical question plus every **training phrasing**
+the author supplied. A phrasing that is not listed is a phrasing the bot will not recognise, which
+is what makes adding phrasings the actual "training" action.
+
+A match is only served when both hold:
+
+| Signal | Floor | Why |
+|---|---|---|
+| `coverage` — share of the asker's distinct word stems the answer covers | ≥ 0.67 | Stops an adjacent question ("password complexity for laptops") collecting an unrelated answer ("reset your payroll password") |
+| `termMatches` — absolute count of matching stems | ≥ 2 | Stops a single shared common word looking like a match |
+
+Below the floor the curated path declines and the turn continues to normal tool planning and
+document retrieval. Declining is always safe; serving the wrong approved answer is not. The
+threshold is `limits.curatedAnswerMinCoverage` on the orchestrator.
+
+### 14.5 Where it sits in the turn
+
+The lookup runs **before** the intent zone gate, with one exclusion:
+
+```text
+classify intent
+      ↓
+ risk === RESTRICTED ? ───yes──→ skip the curated path entirely
+      │ no
+      ↓
+gateway.authorize(knowledge.answer:search)   ← ceiling + audience
+      ↓
+match ≥ threshold ? ──yes──→ response filter → reply, done (no model call)
+      │ no
+      ↓
+intent zone gate → tool planning → document retrieval → model
+```
+
+Running before the zone gate is deliberate: a candidate asking a policy-shaped question should get
+the answer HR published *for candidates*, not a zone refusal, and an approved `PUBLIC` answer is not
+internal data. Excluding `RESTRICTED`-risk intents is what keeps that safe — a salary question still
+reaches the gate and still leaves an audited `DENY`, whatever curated text happens to match it.
+`tests/security/bot-training.test.ts` pins both halves.
+
+### 14.6 Response filtering
+
+A served answer passes through `filterAiResponse` like any other reply, with one adjustment: the
+figures inside the answer are passed as `groundedNumbers`. A human wrote and approved them, so they
+are grounded by definition — without this the filter would redact the very numbers HR published.
+
+Injection-shaped text inside a curated answer is logged but not stripped. There is no model turn for
+it to hijack, and the text was approved by a holder of `faq.manage`; the log entry exists so an
+operator can notice an author pasting something odd.
+
+### 14.7 The training backlog
+
+When the assistant refuses for lack of grounding (§8), the question is written to
+`unanswered_questions`. The dashboard lists those as the training backlog; answering one links the
+new row back through `source_unanswered_id` and marks the question resolved with
+`resolved_answer_id`. That closes the loop the feature exists for: the bot's own gaps become the
+work queue for filling them.
+
+---
+
+## 15. Limitations
 
 Honest gaps between what CLAUDE.md describes and what this repository does.
 

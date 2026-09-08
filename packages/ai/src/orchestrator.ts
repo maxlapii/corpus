@@ -28,7 +28,7 @@ import {
   type RateLimitRule,
   type SecurityEventService,
 } from '@corpus/security'
-import type { KnowledgeSearchService } from '@corpus/knowledge'
+import type { AnswerSearchService, CuratedAnswer, KnowledgeSearchService } from '@corpus/knowledge'
 import type { PolicyGateway } from '@corpus/security'
 import type { IntentClassifier } from './intent-classifier.js'
 import { systemPromptForZone } from './prompts.js'
@@ -43,6 +43,8 @@ export interface OrchestratorDeps {
   gateway: PolicyGateway
   repos: Repositories
   knowledgeSearch: KnowledgeSearchService
+  /** Curated dashboard-authored answers, consulted before the model. */
+  answerSearch: AnswerSearchService
   securityEvents: SecurityEventService
   rateLimiter: RateLimiter
   logger: Logger
@@ -52,6 +54,8 @@ export interface OrchestratorDeps {
     maxHistoryTurns: number
     maxPageSize: number
     aiRule: RateLimitRule
+    /** Query-stem coverage a curated answer needs to be served verbatim. */
+    curatedAnswerMinCoverage?: number
   }
 }
 
@@ -75,9 +79,14 @@ export interface AssistantReply {
   usage: { inputTokens: number; outputTokens: number }
   /** Set when the request was refused before reaching the model. */
   refused: boolean
+  /** Set when a dashboard-authored answer was served instead of model output. */
+  curatedAnswerId?: string
 }
 
 const MAX_MESSAGE_CHARS = 2000
+
+/** Two thirds of the query's stems must appear before an answer is reused. */
+const DEFAULT_CURATED_MIN_COVERAGE = 0.67
 
 /** Provider outage or a spent daily allowance — an operating state, not a crash. */
 const PROVIDER_UNAVAILABLE_REPLY =
@@ -169,6 +178,42 @@ export class AIOrchestrator {
     const definition = INTENT_DEFINITIONS[intent]
     const needsPreAuthorisation =
       !isIntentAllowedInZone(intent, identity.zone) || definition.risk === 'RESTRICTED'
+
+    // A curated answer is text a human with `faq.manage` authored and approved
+    // for this audience, so serving it verbatim is cheaper and more truthful
+    // than asking a model to paraphrase it (§30, §37, §38). Authorisation still
+    // comes first, from `knowledge.answer:search`: the gateway sets the
+    // classification ceiling and the zone sets the audience.
+    //
+    // This runs *before* the intent gate below, because an approved PUBLIC
+    // answer is not internal data — a candidate asking a policy-shaped question
+    // should get the answer HR published for them rather than a zone refusal.
+    // RESTRICTED-risk intents are excluded: those must reach the gate and leave
+    // an audited DENY, which is the whole reason the gate exists.
+    if (definition.risk !== 'RESTRICTED') {
+      const curated = await this.curatedAnswerFor(identity, message, today, request.requestId)
+      if (curated) {
+        const filtered = filterAiResponse(curated.answer, {
+          groundedNumbers: figuresIn(curated.answer),
+        })
+        await this.persistAssistant(
+          scope,
+          conversationId,
+          filtered.text,
+          intent,
+          request.persist !== false,
+        )
+        return {
+          ...empty,
+          text: filtered.text,
+          intent,
+          filterFindings: filtered.findings,
+          injectionDetected: scan.detected,
+          curatedAnswerId: curated.answerId,
+        }
+      }
+    }
+
 
     if (needsPreAuthorisation) {
       const decision = await this.deps.gateway.authorize({
@@ -498,6 +543,60 @@ export class AIOrchestrator {
     }
   }
 
+  /**
+   * The best curated answer for this turn, or null to fall through to the
+   * model. Returning null is always safe; returning a row the caller may not
+   * read is not, so every filter is applied before the text is read.
+   */
+  private async curatedAnswerFor(
+    identity: Identity,
+    message: string,
+    today: DateOnly,
+    requestId: string,
+  ): Promise<CuratedAnswer | null> {
+    const decision = await this.deps.gateway.authorize({
+      identity,
+      action: 'search',
+      resource: { type: 'knowledge.answer', tenantId: identity.tenantId },
+      requestId,
+      // A miss is the common case and writes no row; a hit is audited by the
+      // tool-free path below, so the search itself stays off the audit log.
+      skipAudit: true,
+    })
+    if (!decision.allowed) return null
+
+    const result = await this.deps.answerSearch.search({
+      tenantId: identity.tenantId,
+      query: message,
+      zone: identity.zone,
+      allowedClassifications: decision.allowedClassifications,
+      onDate: today,
+      limit: 3,
+    })
+
+    const best = result.answers[0]
+    if (!best) return null
+
+    const floor = this.deps.limits.curatedAnswerMinCoverage ?? DEFAULT_CURATED_MIN_COVERAGE
+    // Below the floor the question is merely adjacent, and answering it with
+    // someone else's approved text would be a confident wrong answer (§30).
+    if (best.coverage < floor || best.termMatches < 2) return null
+
+    if (best.injection) {
+      // Authored by a human with `faq.manage`, and served without a model turn,
+      // so it cannot hijack a prompt — but an approved answer carrying
+      // instruction-shaped text is worth an operator's attention.
+      this.deps.logger.warn('curated answer contains instruction-like text', {
+        action: 'knowledge.answer.serve',
+        result: 'injection_markers',
+        tenantId: identity.tenantId,
+        requestId,
+      })
+    }
+
+    return best
+  }
+
   private async persistAssistant(
     scope: { tenantId: string },
     conversationId: string | null,
@@ -520,6 +619,14 @@ function addUsage(
   b: { inputTokens: number; outputTokens: number },
 ): { inputTokens: number; outputTokens: number } {
   return { inputTokens: a.inputTokens + b.inputTokens, outputTokens: a.outputTokens + b.outputTokens }
+}
+
+/**
+ * Figures inside an approved answer are grounded by definition — a human wrote
+ * them — so the response filter must not redact the very numbers HR published.
+ */
+function figuresIn(text: string): string[] {
+  return [...text.matchAll(/\d[\d,]*(?:\.\d+)?/g)].map((m) => m[0])
 }
 
 /** Keeps the audit row coherent when refusing an out-of-zone intent. */

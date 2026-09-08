@@ -237,7 +237,8 @@ app
  │
  └─ /*               requireSession → USER / INTERNAL identity
        └─ employees, departments, positions, leave, holidays, jobs, candidates,
-          applications, policies, reports, audit, security, assistant
+          applications, policies, knowledge/answers, reports, audit, security,
+          assistant
 ```
 
 ### 4.2 The path of one internal request
@@ -360,16 +361,21 @@ authority: every data access goes through ToolRegistry → PolicyGateway".
   │                     canonicaliseIntent(): only the intent NAME is accepted; zone/target/risk
   │                     are re-read from INTENT_DEFINITIONS (packages/domain/src/intents.ts)
   ▼
- PolicyGateway (pre-check)  4. if intent is out of zone OR RESTRICTED-risk (e.g. EMPLOYEE_SALARY):
+ Curated answers        4. unless the intent is RESTRICTED-risk:
+  │                          gateway.authorize(knowledge.answer:search) → classification ceiling;
+  │                          the zone supplies the audience. A match above the relevance floor is
+  │                          served VERBATIM and the turn ends — no provider call at all (§30, §37)
+  ▼
+ PolicyGateway (pre-check)  5. if intent is out of zone OR RESTRICTED-risk (e.g. EMPLOYEE_SALARY):
   │                            gateway.authorize(...) BEFORE the model sees any tool list, so the
   │                            refusal is an audited decision, not an unanswered question
   ▼
- AIOrchestrator          5. planning call: provider.generateResponse({ system, messages, tools })
+ AIOrchestrator          6. planning call: provider.generateResponse({ system, messages, tools })
   │                          tools = ToolRegistry.describeFor(identity) — filtered by zone AND
   │                          permission, so the external bot is never shown internal tool names
   │                          history ≤ 4 turns, each message truncated to 600 chars, temperature 0
   ▼
- ToolRegistry.execute    6. for each of at most 3 requested tools (packages/ai/src/tool-registry.ts):
+ ToolRegistry.execute    7. for each of at most 3 requested tools (packages/ai/src/tool-registry.ts):
   │                          a. unknown name → TOOL_NOT_FOUND (does not reveal what exists)
   │                          b. tool.scope must equal identity.zone
   │                          c. safeParse(tool.validator, arguments)  — model input is untrusted
@@ -382,13 +388,13 @@ authority: every data access goes through ToolRegistry → PolicyGateway".
  knowledge               search_hr_policy passes decision.allowedClassifications into the SQL
   │                      (packages/knowledge/src/search-service.ts, packages/db/src/repositories/knowledge.ts)
   ▼
- Response generator      7. second call: "AUTHORISED CONTEXT" (passages wrapped by wrapUntrusted)
+ Response generator      8. second call: "AUTHORISED CONTEXT" (passages wrapped by wrapUntrusted)
   │                          + "TOOL RESULTS"; instructed to use only that material
-  │                      8. if no tool succeeded → the tools' own refusal messages; HR_POLICY_QUESTION
+  │                      9. if no tool succeeded → the tools' own refusal messages; HR_POLICY_QUESTION
   │                          with no answer → unanswered_questions row
-  │                      9. empty answer → INSUFFICIENT_KNOWLEDGE_REPLY (never a guess — §30)
+  │                     10. empty answer → INSUFFICIENT_KNOWLEDGE_REPLY (never a guess — §30)
   ▼
- Security filter        10. filterAiResponse (packages/security/src/response-filter.ts):
+ Security filter        11. filterAiResponse (packages/security/src/response-filter.ts):
   │                         strip injected-instruction lines, system-prompt markers, SQL echo,
   │                         ungrounded currency (only tool-returned numbers survive), bulk PII
   │                         findings → BLOCKED_REQUEST security event

@@ -18,8 +18,8 @@ SQL engine. Only the LLM and outbound Telegram HTTP are substituted.
 |---|---|
 | Runner | Vitest 2 (`vitest.config.ts`) |
 | Environment | `node`, `pool: 'forks'`, 20 s test/hook timeout |
-| Discovery | `tests/**/*.test.ts` — 22 files |
-| Total tests | 421, all passing |
+| Discovery | `tests/**/*.test.ts` — 25 files |
+| Total tests | 569, all passing |
 | Database under test | `better-sqlite3`, in-memory, real migrations from `migrations/` |
 | LLM under test | `MockAIProvider` (`packages/ai/src/providers/mock.ts`) — no API key needed |
 | Coverage provider | v8, configured but not wired into CI (`npx vitest run --coverage`) |
@@ -54,7 +54,7 @@ on a clean checkout.
 
 ## Test inventory
 
-### `tests/unit` — 183 tests
+### `tests/unit` — 238 tests
 
 | File | Tests | Covers | Subject under test |
 |---|---:|---|---|
@@ -65,6 +65,7 @@ on a clean checkout.
 | `prompt-injection.test.ts` | 31 | `scanForInjection` detects each attack category and does not flag ordinary HR questions; long base64 flagged; evidence truncated so a scan result cannot replay the payload; severity escalates with signal count; `wrapUntrusted` marks content as data, resists fence-closing, strips embedded system tags, sanitises the source label (§26, §27) | `packages/security` injection module |
 | `response-filter.test.ts` | 13 | Grounded answers pass through; monetary figures the backend never returned are redacted while tool-derived ones survive; leaked system-prompt framing, untrusted-block markup and echoed SQL removed; instruction lines from retrieved documents dropped; bulk e-mail dumps redacted with a tighter threshold in the EXTERNAL zone (§54) | `filterAiResponse` in `packages/security` |
 | `intents.test.ts` | 7 | Each intent defined exactly once; salary is RESTRICTED; no internal intent is reachable from the EXTERNAL zone; `canonicaliseIntent` collapses unknown names to `UNKNOWN` and **ignores scope, risk and permission fields supplied by the model** (§19) | `packages/domain/src/intents.ts` |
+| `answer-flow.test.ts` | 17 | Curated bot answers: an EXTERNAL or BOTH audience is refused above PUBLIC from every angle, an INTERNAL one may carry any classification, `validateAnswerDraft` agrees with `audienceReachesExternalZone`; question/answer length bounds; the training-phrase cap and minimum length; malformed and inverted effective dates; ARCHIVED is terminal; the FTS search text folds the question together with every phrasing (§9, §23, §30) | `packages/domain/src/answer-flow.ts` |
 | `misc-units.test.ts` | 45 | Validation combinators; date arithmetic and effective-date windows; password hashing, verification, rehash detection and policy; constant-time comparison; log redaction; FTS/LIKE escaping and tokenising; application-stage and leave-status machines; document chunking; text extraction; the in-memory rate limiter | `@corpus/shared`, `@corpus/domain`, `@corpus/auth`, `@corpus/knowledge`, `@corpus/security` |
 
 ### `tests/integration` — 76 tests
@@ -80,7 +81,7 @@ on a clean checkout.
 | `retention.test.ts` | 4 | The `scheduled()` handler applies every `retention_policies` row, removing rows past their window and keeping recent ones; expired sessions and orphaned conversations pruned; idempotent on a second run; every declared policy has a pruner; seeded business data untouched (§29) |
 | `workers-ai.test.ts` | 6 | The Workers AI provider driving the real app with an injected `AI` binding: reports itself configured with no API key; runs an authorised tool and answers from its result; offers an external caller only recruitment tools; still refuses a restricted request without ever calling the model; degrades to a plain refusal when the daily allowance is exhausted; keeps answering from authorised tool results if the model dies mid-turn |
 
-### `tests/security` — 195 tests
+### `tests/security` — 235 tests
 
 | File | Tests | Covers |
 |---|---:|---|
@@ -88,6 +89,7 @@ on a clean checkout.
 | `authorization-matrix.test.ts` | 117 | 23 sensitive operations × 5 roles over real HTTP (115), plus a DENY audit row is written for every refusal and no denial leaks SQL, a stack trace or internal detail |
 | `hardening.test.ts` | 38 | Regression tests for the 16 confirmed findings of the §62 security review, each named for the defect it pins: permanent account lockout; verification-code delivery failing closed in production; candidate disclosure and Telegram identity takeover; leave cancellation of already-taken days and the balance-movement race; audit that cannot be skipped for mutations or classified reads; recruitment and job state machines on the side paths; pagination validation; grounding required for policy answers; a nullable `userId` for a Telegram-only employee; `TOOL_DENIED` emission; and rate-limit keys that ignore `X-Forwarded-For`. Also asserts the secret scanner passes on the committed tree while still catching real credentials |
 | `prompt-attacks.test.ts` | 32 | 17 prompt-injection payloads through `/assistant/ask`; a security event per attempt; a role claim never changes the loaded role; naming a tool does not reveal whether it exists; 6 data-leakage attacks (another employee's salary, the full directory, another employee's leave, CONFIDENTIAL procedures via both API and assistant, a manager confined to direct reports, a manager denied compensation for their own report); 6 identity-spoofing attacks (forged session token, revoked session, cross-session CSRF token, linking Telegram to another employee, an unverified Telegram user, a Telegram webhook with a wrong or missing secret) |
+| `bot-training.test.ts` | 30 | Dashboard-authored bot answers, which are served verbatim with no model turn: an INTERNAL-audience answer never reaches the external zone (FTS *and* LIKE fallback); an EXTERNAL-only answer never reaches the internal zone; a classification outside the caller's ceiling is excluded; an empty authorised set returns nothing; DRAFT and ARCHIVED answers are never served; effective dates open and close serving; the schema CHECK rejects a non-PUBLIC external answer even on a direct insert; retrieval never crosses a tenant; EMPLOYEE and MANAGER cannot author, list or read the backlog while HR, HR_ADMIN and SYSTEM_ADMIN can; the API refuses an EXTERNAL answer above PUBLIC; an archived answer cannot be revived; an EXTERNAL preview stays capped at PUBLIC even for SYSTEM_ADMIN; and a RESTRICTED-risk intent still reaches the gate and leaves an audited DENY rather than being short-circuited by a matching curated answer (§8, §9, §24) |
 
 ### `tests/unit` additions
 
@@ -97,9 +99,15 @@ on a clean checkout.
 | `docs-consistency.test.ts` | 6 | Guards this document and the rest against mechanical drift: every CLAUDE.md §48 file exists; every npm script is documented somewhere; every configuration key `config.ts` reads appears in `.env.example`; every test file is listed in this inventory; every AI provider the factory can build is described in `docs/ai.md` and `.env.example`; every wrangler binding the container expects is documented in `docs/deployment.md`. When it fails, update the docs — do not relax the assertion |
 | `ai-providers.test.ts` | 29 | Provider selection (binding-authenticated providers need no API key; `workers-ai` in production raises no `AI_API_KEY` error; Google still does; mock refused in production; unknown names fall back to mock); `WorkersAiProvider` request shape, tool advertising in the flat Workers AI format, tool-call parsing in both the native and OpenAI shapes, malformed calls dropped, unexpected response shapes tolerated, quota failures marked retryable, timeout enforcement; `GoogleProvider` key-in-header (never the URL), role mapping, JSON mode, schema-keyword stripping, and no provider body leaked on an HTTP error |
 
-### `tests/e2e` — 15 tests
+### `tests/e2e` — 20 tests
 
-All in `tests/e2e/flows.test.ts`, grouped by journey:
+`tests/e2e/bot-training-flow.test.ts` (5) covers the training loop end to end: HR publishes an
+answer and the external bot serves it verbatim while a DRAFT is not served; an unanswered internal
+question reaches the backlog, is answered, links back to the source question and leaves the open
+backlog; the preview shows what each bot would say without publishing; editing an answer changes the
+next reply; and a served answer is recorded against the conversation.
+
+The remaining journeys are in `tests/e2e/flows.test.ts`, grouped by journey:
 
 | Journey | Tests | Flow |
 |---|---:|---|

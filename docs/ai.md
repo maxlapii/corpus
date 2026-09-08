@@ -329,34 +329,43 @@ sequences, budgets and frames; it holds no authority of its own.
    ▼
  4. Classify            IntentClassifier.classify(message, identity.zone)
    ▼
- 5. Intent gate         if out-of-zone OR risk === 'RESTRICTED':
+ 5. Curated answer      skipped entirely when risk === 'RESTRICTED'
+   │                    PolicyGateway.authorize(knowledge.answer:search)
+   │                       → classification ceiling; zone → audience
+   │                    answerSearch.search(...) → best match
+   │                    coverage ≥ 0.67 AND termMatches ≥ 2 ?
+   │                       yes → response filter → persist → RETURN.
+   │                             No provider call is made at all.
+   │                       no  → fall through
+   ▼
+ 6. Intent gate         if out-of-zone OR risk === 'RESTRICTED':
    │                       PolicyGateway.authorize(...)  → audited ALLOW/DENY
    │                       deny → persist refusal, return { refused: true }
    ▼
- 6. Plan                tools.describeFor(identity)   ← zone AND permission filter
+ 7. Plan                tools.describeFor(identity)   ← zone AND permission filter
    │                    history: last maxHistoryTurns*2 messages, 600 chars each
    │                    provider.generateResponse({ system, messages, tools, temp 0 })
    ▼
- 7. Execute             for each of the first 3 requested tools:
+ 8. Execute             for each of the first 3 requested tools:
    │                       tools.execute(name, args, ctx) → registry → gateway
    │                       record tool_call row; collect summary / data /
    │                       groundedNumbers / citations / contextPassages
    │                    passages are wrapped by wrapUntrusted() before use
    ▼
- 8. Answer              tools requested but none allowed → return the tools'
+ 9. Answer              tools requested but none allowed → return the tools'
    │                       own refusal text (never the prompt scaffold)
    │                    otherwise → second provider call with
    │                       "AUTHORISED CONTEXT" + "TOOL RESULTS" and the
    │                       instruction to use only that material
    ▼
- 9. No fabrication      empty answer → INSUFFICIENT_KNOWLEDGE_REPLY (policy /
+10. No fabrication      empty answer → INSUFFICIENT_KNOWLEDGE_REPLY (policy /
    │                    unknown) or the standard HR referral;
    │                    HR_POLICY_QUESTION also records an unanswered question
    ▼
-10. Response filter     filterAiResponse(text, { groundedNumbers, ... })
+11. Response filter     filterAiResponse(text, { groundedNumbers, ... })
    │                    findings → BLOCKED_REQUEST security event
    ▼
-11. Persist             appendMessage(role: assistant, intent)
+12. Persist             appendMessage(role: assistant, intent)
    ▼
  AssistantReply
 ```
@@ -793,6 +802,8 @@ behaviour — but every entry above holds even if the model ignores all of it.
 | `tests/security/prompt-attacks.test.ts` | Injection refusals with a security event per attempt; a role claim never changes the loaded role; tool existence not revealed by name; cross-user and restricted-data refusals through the assistant. |
 | `tests/security/acceptance.test.ts` | The eight §44 acceptance tests, six of which run through `AIOrchestrator.handle`. |
 | `tests/integration/rag-permission-filtering.test.ts` | Classification filtering on the retrieval path used by `search_hr_policy`. |
+| `tests/security/bot-training.test.ts` | Curated answers: audience and classification isolation, status and effective dates, the schema CHECK, tenant isolation, who may author, and that a `RESTRICTED`-risk intent still reaches the gate rather than being short-circuited by a matching answer. |
+| `tests/unit/answer-flow.test.ts` | The audience/classification invariant and the status machine, in isolation. |
 
 All of these run against `MockAIProvider`, so no API key is required.
 

@@ -16,15 +16,16 @@ Paths are relative to the repository root. Section references (`§n`) point at `
 8. [AI tool system](#ai-tool-system)
 9. [Bearer credentials for application references](#bearer-credentials-for-application-references)
 10. [RAG permission filtering](#rag-permission-filtering)
-11. [Prompt-injection detection](#prompt-injection-detection)
-12. [Response filter](#response-filter)
-13. [Rate limiting](#rate-limiting)
-14. [Audit log and security events](#audit-log-and-security-events)
-15. [Transport and HTTP hardening](#transport-and-http-hardening)
-16. [Secrets](#secrets)
-17. [Final security review checklist (§62)](#final-security-review-checklist-62)
-18. [Security test suite](#security-test-suite)
-19. [Limitations / Roadmap](#limitations--roadmap)
+11. [Curated bot answers](#curated-bot-answers)
+12. [Prompt-injection detection](#prompt-injection-detection)
+13. [Response filter](#response-filter)
+14. [Rate limiting](#rate-limiting)
+15. [Audit log and security events](#audit-log-and-security-events)
+16. [Transport and HTTP hardening](#transport-and-http-hardening)
+17. [Secrets](#secrets)
+18. [Final security review checklist (§62)](#final-security-review-checklist-62)
+19. [Security test suite](#security-test-suite)
+20. [Limitations / Roadmap](#limitations--roadmap)
 
 ---
 
@@ -401,6 +402,41 @@ Proof: `tests/integration/rag-permission-filtering.test.ts` (per-role ceilings, 
 
 ---
 
+## Curated bot answers
+
+Curated answers (**Knowledge → Bot training**) are the one knowledge path reachable from the EXTERNAL zone, and the one served **verbatim with no model turn**. There is no summarisation step in between, so retrieval is the whole control.
+
+Two axes, both filtered in SQL (`KnowledgeAnswerRepository.search()`):
+
+| Axis | Source | Never from |
+|---|---|---|
+| `audience` ∈ {EXTERNAL, INTERNAL, BOTH} | The verified channel's zone | The caller, the model, the request body |
+| `classification` | `AllowDecision.allowedClassifications` from `knowledge.answer:search` | Anything the caller supplies |
+
+`AUDIENCES_FOR_ZONE` makes the axis a compartment rather than a ladder: EXTERNAL sees `{EXTERNAL, BOTH}`, INTERNAL sees `{INTERNAL, BOTH}`. An EXTERNAL-only answer is invisible internally too.
+
+The governing invariant is enforced four times, and deliberately so:
+
+> An answer the external bot can serve must be classified `PUBLIC`.
+
+1. The dashboard disables the classification selector for an external audience (UX only).
+2. `validateAnswerDraft` rejects the combination (`packages/domain/src/answer-flow.ts`).
+3. The `knowledge.answer:create` / `:update` rules apply the gateway's classification ceiling — and `:update` is checked against the **higher** of the stored and requested classification, so neither widening nor narrowing can be done from below the row's own ceiling.
+4. `CHECK (audience = 'INTERNAL' OR classification = 'PUBLIC')` in `migrations/0007_knowledge_answers.sql`.
+
+Only 3 and 4 are load-bearing. `tests/security/bot-training.test.ts` inserts directly through the repository, bypassing 1–3, to prove the schema refuses the row on its own.
+
+Two further properties worth stating explicitly:
+
+- **The curated lookup runs before the intent zone gate**, so a candidate asking a policy-shaped question gets the answer HR published for candidates rather than a zone refusal. `RESTRICTED`-risk intents are excluded from that shortcut entirely: a salary question still reaches the gate and still leaves an audited `DENY`, whatever curated text happens to match it. Both halves are pinned by tests.
+- **A match must clear a threshold** — ≥ 0.67 stem coverage of the asker's question and ≥ 2 matching stems — before approved text is reused. Below it the turn falls through to normal retrieval. Declining is safe; confidently serving the wrong approved answer is not.
+
+Injection-shaped text inside a curated answer is logged, not stripped: there is no model turn for it to hijack, and a holder of `faq.manage` approved it. Figures inside a served answer are passed to the response filter as `groundedNumbers`, because a human approved them — otherwise the filter would redact the very numbers HR published.
+
+Proof: `tests/security/bot-training.test.ts` (30), `tests/unit/answer-flow.test.ts` (17), `tests/e2e/bot-training-flow.test.ts` (5).
+
+---
+
 ## Prompt-injection detection
 
 `scanForInjection()` in `packages/security/src/prompt-injection.ts` is **defence in depth only**. It never grants or withholds access; it makes attempts visible and lets the orchestrator frame text as untrusted.
@@ -524,8 +560,8 @@ Local results on 2026-09-07: `npx vitest run tests/security` → 3 files, 157 te
 | 6 | AI cannot directly access database | Handlers only reach tenant-scoped repositories via `ToolContext.repos`; providers receive text only | Same as 5; `tests/unit/tool-registry.test.ts` "gives every tool a permission, zone, risk and resource" |
 | 7 | AI cannot grant permissions | `canonicaliseIntent()` discards model-supplied scope/risk; permissions only from `permissionsForRoles()` | `tests/unit/intents.test.ts`; `tests/unit/rbac.test.ts` "never grants a wildcard-style permission" |
 | 8 | Tool calls pass PolicyGateway | `ToolRegistry.execute()` step 4 | `tests/unit/tool-registry.test.ts` "never calls a handler when the gateway denies the request", "records an audit entry for every tool authorisation decision" |
-| 9 | RAG results are permission-filtered | `searchChunks()` SQL `IN` filter; `D1KnowledgeSearchService` fail-closed and re-check | `tests/integration/rag-permission-filtering.test.ts` |
-| 10 | Restricted documents are protected | Knowledge grant ladder; `maxReadableClassification()`; effective-ceiling intersection | `tests/unit/policy-gateway.test.ts` "knowledge classification ceilings"; `tests/security/authorization-matrix.test.ts` "read a RESTRICTED document" |
+| 9 | RAG results are permission-filtered | `searchChunks()` SQL `IN` filter; `D1KnowledgeSearchService` fail-closed and re-check. Curated answers filter audience *and* classification in `KnowledgeAnswerRepository.search()`, with the same fail-closed re-check | `tests/integration/rag-permission-filtering.test.ts`; `tests/security/bot-training.test.ts` |
+| 10 | Restricted documents are protected | Knowledge grant ladder; `maxReadableClassification()`; effective-ceiling intersection; the `audience`/`classification` CHECK on `knowledge_answers` | `tests/unit/policy-gateway.test.ts` "knowledge classification ceilings"; `tests/security/authorization-matrix.test.ts` "read a RESTRICTED document"; `tests/security/bot-training.test.ts` "the database refuses an unsafe row" |
 | 11 | Tenant isolation works | Gateway step 1; `tenantScope()`; tenant column on every query | `tests/unit/policy-gateway.test.ts` "denies a cross-tenant resource even for SYSTEM_ADMIN"; acceptance Test 8; RAG test "never crosses a tenant boundary" |
 | 12 | Cross-user access is blocked | `SELF`/`TEAM` ownership; owner ids from database in `resolveResource()` | `tests/unit/policy-gateway.test.ts` "ownership"; `prompt-attacks.test.ts` "data leakage attacks"; acceptance Tests 1, 6 |
 | 13 | Prompt injection is tested | `scanForInjection()`, `wrapUntrusted()` | `tests/unit/prompt-injection.test.ts`; `tests/security/prompt-attacks.test.ts`; acceptance Test 3 |
@@ -537,8 +573,8 @@ Local results on 2026-09-07: `npx vitest run tests/security` → 3 files, 157 te
 | 19 | Input validation exists | `packages/shared/src/validate.ts`; `middleware/body.ts`; tool validators | `tests/unit/misc-units.test.ts` "validation"; `tests/unit/tool-registry.test.ts` "rejects invalid arguments before the handler runs"; `rate-limiting.test.ts` "rejects an oversized request body" |
 | 20 | Production state is not stored on local filesystem | D1 + R2 via `StorageService`; per-request container; memory fallbacks reported by `/health` | `tests/integration/repositories.test.ts`; `/health` `documentStorage` field |
 | 21 | Database migrations work | `migrations/*.sql`, `packages/db/src/migrations.ts` | `tests/integration/schema.test.ts` "applies all migrations exactly once", "enforces foreign keys" |
-| 22 | CI passes | `.github/workflows/ci.yml` (secret scan → lint → typecheck → unit → integration → security → e2e → RBAC drift → build) | Full suite passed locally on 2026-09-07 (421 tests). The GitHub Actions run itself must be confirmed in the repository's Actions tab. |
-| 23 | Security tests pass | `tests/security/*.test.ts` | `npm run test:security` → 157 passed (2026-09-07) |
+| 22 | CI passes | `.github/workflows/ci.yml` (secret scan → lint → typecheck → unit → integration → security → e2e → RBAC drift → build) | Full suite passed locally on 2026-09-09 (569 tests). The GitHub Actions run itself must be confirmed in the repository's Actions tab. |
+| 23 | Security tests pass | `tests/security/*.test.ts` | `npm run test:security` → 235 passed (2026-09-09) |
 
 ---
 

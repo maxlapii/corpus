@@ -24,7 +24,7 @@ RBAC is one input to that decision. Nothing in this document is evaluated by the
 | Generator | `scripts/generate-rbac-migration.ts` | `npx tsx scripts/generate-rbac-migration.ts` |
 | Drift guard | `tests/integration/rbac-consistency.test.ts` | Fails if code and migration diverge. |
 
-The database tables (`roles`, `permissions`, `role_permissions`, `user_roles`) are created in `migrations/0001_core_identity.sql` and populated by `0006`.
+The database tables (`roles`, `permissions`, `role_permissions`, `user_roles`) are created in `migrations/0001_core_identity.sql` and populated by the most recent generated reference migration — `0008` at the time of writing, which supersedes `0006`.
 
 ## Where RBAC sits in the decision
 
@@ -76,7 +76,7 @@ Notes:
 
 ## Permissions
 
-Forty permissions, defined in `PERMISSIONS` (`packages/domain/src/roles.ts`). Descriptions are from `PERMISSION_DESCRIPTIONS` in `scripts/generate-rbac-migration.ts` and are what the `permissions` table stores.
+Forty-three permissions, defined in `PERMISSIONS` (`packages/domain/src/roles.ts`). Descriptions are from `PERMISSION_DESCRIPTIONS` in `scripts/generate-rbac-migration.ts` and are what the `permissions` table stores.
 
 ### Employee directory
 
@@ -134,6 +134,14 @@ Forty permissions, defined in `PERMISSIONS` (`packages/domain/src/roles.ts`). De
 | `policy.update` | Update knowledge documents |
 | `policy.delete` | Delete or archive knowledge documents |
 
+### Curated bot answers
+
+| Permission | Description |
+|---|---|
+| `faq.read.public` | Read PUBLIC curated bot answers as an anonymous candidate |
+| `faq.read` | Read curated bot answers for the internal zone |
+| `faq.manage` | Author, publish and archive curated bot answers |
+
 ### Reporting and oversight
 
 | Permission | Description |
@@ -185,6 +193,9 @@ Generated from `ROLE_PERMISSIONS` and `PUBLIC_PERMISSIONS` in `packages/domain/s
 | `policy.create` |  |  | x | x | x |  |
 | `policy.update` |  |  | x | x | x |  |
 | `policy.delete` |  |  |  | x | x |  |
+| `faq.read` | x | x | x | x | x |  |
+| `faq.manage` |  |  | x | x | x |  |
+| `faq.read.public` |  |  |  |  | x | x |
 | `report.read` |  | x | x | x | x |  |
 | `audit.read` |  |  |  | x | x |  |
 | `security.read` |  |  |  | x | x |  |
@@ -196,6 +207,7 @@ Observations worth knowing when reasoning about access:
 - `HR` cannot read compensation, RESTRICTED documents, the audit trail or security events; `HR_ADMIN` can. Neither can manage users (`system.manage`). Asserted in `tests/unit/rbac.test.ts`.
 - `HR_ADMIN` lacks `candidate.create.public`, `application.create.public`, `application.read.self` and `system.manage`. (It does hold `job.read.public`, so the only member of the PUBLIC set it shares is that one.) The anonymous-caller permissions only matter for unauthenticated callers; internal staff create candidates and applications via the `candidate.update` / `application.update` grants in the rule table.
 - `EMPLOYEE` holds `job.read.internal`, so verified employees can see draft and closed jobs on internal channels.
+- `faq.read.public` is in the PUBLIC set, so `SYSTEM_ADMIN` holds it too (the role is fully enumerated). That is why the `knowledge.answer:search` grant ladder is ordered **widest first**, unlike the document ladders: a narrowest-first ladder would stop at `faq.read.public` for an administrator and cap them at PUBLIC.
 
 ## PUBLIC permission set
 
@@ -203,6 +215,7 @@ An unauthenticated caller (external Telegram bot, careers-site routes) never get
 
 ```text
 job.read.public
+faq.read.public
 candidate.create.public
 application.create.public
 application.read.self
@@ -352,6 +365,12 @@ Published jobs are classified `PUBLIC`; drafts and closed jobs are `INTERNAL`, s
 | `knowledge.document:create` | INTERNAL | `policy.create` / ANY / RESTRICTED | — |
 | `knowledge.document:update` | INTERNAL | `policy.update` / ANY / RESTRICTED | — |
 | `knowledge.document:delete` | INTERNAL | `policy.delete` / ANY / RESTRICTED | — |
+| `knowledge.answer:search` | EXTERNAL + INTERNAL | `policy.read.restricted` / ANY / RESTRICTED<br>`policy.read.confidential` / ANY / CONFIDENTIAL<br>`faq.read` / ANY / INTERNAL<br>`faq.read.public` / ANY / PUBLIC | Widest-first, see above. The only knowledge rule reachable from EXTERNAL |
+| `knowledge.answer:list` | INTERNAL | `faq.manage` / ANY / RESTRICTED | — |
+| `knowledge.answer:read` | INTERNAL | `faq.manage` / ANY / RESTRICTED | — |
+| `knowledge.answer:create` | INTERNAL | `faq.manage` / ANY / RESTRICTED | Effective ceiling still intersects with the author's own read ceiling |
+| `knowledge.answer:update` | INTERNAL | `faq.manage` / ANY / RESTRICTED | Checked against the higher of the stored and the requested classification |
+| `knowledge.answer:delete` | INTERNAL | `faq.manage` / ANY / RESTRICTED | — |
 
 Knowledge is INTERNAL-zone only. There is no public policy route and the external bot has no knowledge tool, so "show me the employee handbook" from a candidate is a `WRONG_SECURITY_ZONE` denial (`tests/security/acceptance.test.ts`, Test 4). Write operations declare a RESTRICTED ceiling but are further capped by the permission-derived reading ceiling (see Classification ceilings).
 

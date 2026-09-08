@@ -86,9 +86,15 @@ describe('role definitions', () => {
     expect(hrAdmin.has('system.manage')).toBe(false)
   })
 
-  it('limits the public permission set to recruitment self-service', () => {
+  it('limits the public permission set to recruitment self-service and public FAQ', () => {
     expect([...PUBLIC_PERMISSIONS].sort()).toEqual(
-      ['application.create.public', 'application.read.self', 'candidate.create.public', 'job.read.public'].sort(),
+      [
+        'application.create.public',
+        'application.read.self',
+        'candidate.create.public',
+        'faq.read.public',
+        'job.read.public',
+      ].sort(),
     )
     for (const permission of PUBLIC_PERMISSIONS) {
       expect(permission).not.toMatch(/^(employee|leave|policy|audit|security|system|interview|offer)\./)

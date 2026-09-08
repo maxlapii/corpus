@@ -19,7 +19,7 @@ Workers AI, and a Next.js dashboard on Pages. No API key, no server, no monthly 
 | --- | --- |
 | **A body of people** — the root of *corporate*, *corporation*, *corps* | The workforce: employees, departments, managers, candidates |
 | **A body of texts** — a corpus is an indexed document collection | The knowledge base: policies chunked, versioned and retrieved with citations |
-| **A body of law** — *corpus juris*; *habeas corpus* | The authorisation model: 40 permissions, 60 policy rules, and an append-only audit trail |
+| **A body of law** — *corpus juris*; *habeas corpus* | The authorisation model: 43 permissions, 66 policy rules, and an append-only audit trail |
 
 The third sense is the pointed one. *Habeas corpus* is the writ that forbids holding someone
 without an authority willing to justify it before a court. CORPUS applies the same rule to data:
@@ -126,12 +126,14 @@ corpus/
 │   │   │   ├── env.ts          Worker bindings and environment
 │   │   │   ├── middleware/     auth, body limits, errors, request context, security headers
 │   │   │   └── routes/         auth, employees, leave, recruitment, knowledge,
-│   │   │                       reports, security, assistant, telegram, health
+│   │   │                       knowledge-answers, reports, security, assistant,
+│   │   │                       telegram, health
 │   │   └── wrangler.toml       D1 / R2 / KV bindings, vars, production env
 │   │
 │   └── web/                    Next.js 14 admin dashboard
 │       ├── app/                login, dashboard, people, recruitment, leave,
-│       │                       knowledge, reports, security, settings, assistant
+│       │                       knowledge, knowledge/training, reports, security,
+│       │                       settings, assistant
 │       ├── components/         shell, session, UI primitives
 │       └── lib/                API client (`NEXT_PUBLIC_API_BASE_URL`)
 │
@@ -429,11 +431,11 @@ builds for Pages with `npm run pages:build --workspace @corpus/web` and deploys 
 ## Testing
 
 ```bash
-npm test                   # all 421 tests (vitest run)
-npm run test:unit          # tests/unit        — 183 tests
-npm run test:integration   # tests/integration —  66 tests
-npm run test:security      # tests/security    — 157 tests
-npm run test:e2e           # tests/e2e         —  15 tests
+npm test                   # all 569 tests (vitest run)
+npm run test:unit          # tests/unit        — 238 tests
+npm run test:integration   # tests/integration —  76 tests
+npm run test:security      # tests/security    — 235 tests
+npm run test:e2e           # tests/e2e         —  20 tests
 npm run test:watch         # vitest in watch mode
 
 npm run lint               # eslint, zero warnings tolerated
@@ -549,13 +551,17 @@ The migration path and its sequencing are described in [docs/roadmap.md](docs/ro
   a public job surface that can withhold a salary range per posting.
 - Knowledge base: documents, versions with effective dates, chunks with classifications, ingestion
   through extraction and chunking, and classification-filtered search.
+- Bot training: curated question/answer pairs authored in the dashboard and served **verbatim** by
+  either Telegram bot, with an audience axis (external / internal / both) on top of the usual
+  classification filter, training phrasings, draft-and-publish, effective dates, a per-bot preview,
+  and a backlog of questions the bots could not answer.
 - AI layer: provider abstraction with mock, Anthropic, OpenAI and OpenAI-compatible providers;
   intent classification with server-side canonicalisation; a tool registry where every tool is
   authorised before its handler runs; a response filter; and per-subject rate limits.
 - Two Telegram bots with webhook secret verification, a replay guard, rate limiting, and
   e-mail-plus-one-time-code identity linking.
-- Next.js dashboard: login, dashboard, people, recruitment, leave, knowledge, reports, security and
-  settings, plus an assistant page.
+- Next.js dashboard: login, dashboard, people, recruitment, leave, knowledge, bot training, reports,
+  security and settings, plus an assistant page.
 - Audit logs and security events, surfaced to authorised administrators.
 - CI with secret scanning, an API contract check, lint, typecheck, four test suites and a build.
 

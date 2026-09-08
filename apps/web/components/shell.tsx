@@ -28,6 +28,7 @@ const NAV: NavItem[] = [
   { href: '/recruitment', label: 'Recruitment', anyOf: ['job.read.internal'] },
   { href: '/leave', label: 'Leave', anyOf: [] },
   { href: '/knowledge', label: 'Knowledge', anyOf: ['policy.read'] },
+  { href: '/knowledge/training', label: 'Bot training', anyOf: ['faq.manage'] },
   { href: '/assistant', label: 'Assistant', anyOf: [] },
   { href: '/reports', label: 'Reports', anyOf: ['report.read'] },
   { href: '/security', label: 'Security', anyOf: ['audit.read', 'security.read'] },
@@ -56,6 +57,12 @@ export function Shell({ children }: { children: ReactNode }) {
 
   const visible = NAV.filter((item) => item.anyOf.length === 0 || item.anyOf.some((p) => can(user, p)))
 
+  // Longest matching prefix wins, so /knowledge/training highlights itself
+  // rather than lighting up /knowledge as well.
+  const activeHref = visible
+    .filter((item) => (item.href === '/' ? pathname === '/' : pathname.startsWith(item.href)))
+    .sort((a, b) => b.href.length - a.href.length)[0]?.href
+
   return (
     <div className="shell">
       <nav className="sidebar" aria-label="Primary">
@@ -64,7 +71,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <span>HR Administration</span>
         </div>
         {visible.map((item) => {
-          const current = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href)
+          const current = item.href === activeHref
           return (
             <Link
               key={item.href}
