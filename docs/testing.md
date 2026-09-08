@@ -178,8 +178,10 @@ limit set explicitly low (`createHarness({ env: { RATE_LIMIT_LOGIN_PER_15M: '3' 
 ### Seed fixtures
 
 `scripts/seed-data.ts` is shared between the harness and `npm run db:seed`, so the tests and a local
-development database contain the same people. All addresses use the reserved `corpus.test` domain and
-the default password comes from `SEED_PASSWORD` (falling back to a development placeholder).
+development database contain the same people. Addresses follow `lapii.<surname>@corpus.test` — one
+local part so a single mailbox owner holds every account, on the reserved `corpus.test` domain so
+none can reach a real inbox. The password comes from `SEED_PASSWORD`, falling back to the
+development placeholder in `.env.example`; tests never hard-code it, they read `h.seed.password`.
 
 | Key | Employee no. | Role | Notes |
 |---|---|---|---|

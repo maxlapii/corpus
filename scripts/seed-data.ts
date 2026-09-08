@@ -66,6 +66,12 @@ const LEAVE_TYPES = [
   { code: 'PARENTAL', name: 'Parental Leave', paid: true, requiresApproval: true, maxConsecutiveDays: 90, entitled: 90 },
 ]
 
+/**
+ * Local part of every seeded address, so one mailbox owner can reach all seven
+ * accounts. The surname keeps them distinct: `lapii.director@corpus.test`.
+ */
+const SEED_EMAIL_PREFIX = 'lapii'
+
 /** Fictional staff. `manager` refers to another entry's key. */
 const PEOPLE = [
   { key: 'admin', employeeNo: 'E0001', firstName: 'Alex', lastName: 'Admin', department: 'OPS', position: 'PLAT', roles: ['SYSTEM_ADMIN'] as Role[], manager: null },
@@ -291,7 +297,7 @@ export async function seedDatabase(
 ): Promise<SeedResult> {
   const slug = options.tenantSlug ?? process.env.DEFAULT_TENANT_SLUG ?? 'default'
   const name = options.tenantName ?? 'CORPUS Demo Company'
-  const password = options.password ?? process.env.SEED_PASSWORD ?? 'DevPassword123!'
+  const password = options.password ?? process.env.SEED_PASSWORD ?? '@@1234$$qwer'
   const today = options.today ?? new Date().toISOString().slice(0, 10)
   const year = Number(today.slice(0, 4))
 
@@ -322,7 +328,7 @@ export async function seedDatabase(
 
   // Two passes so manager references resolve.
   for (const person of PEOPLE) {
-    const email = `${person.firstName}.${person.lastName}`.toLowerCase() + '@corpus.test'
+    const email = `${SEED_EMAIL_PREFIX}.${person.lastName}`.toLowerCase() + '@corpus.test'
     const existing = await repos.employees.findByEmployeeNo(scope, person.employeeNo)
     const employee =
       existing ??

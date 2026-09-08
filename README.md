@@ -215,16 +215,17 @@ to run against a production environment (`scripts/seed.ts`, `scripts/seed-data.t
 
 | E-mail | Role | Notes |
 | --- | --- | --- |
-| `alex.admin@corpus.test` | `SYSTEM_ADMIN` | Operations / platform administrator |
-| `hana.director@corpus.test` | `HR_ADMIN` | HR Director |
-| `rita.partner@corpus.test` | `HR` | HR Business Partner |
-| `marco.lead@corpus.test` | `MANAGER` | Engineering Manager, manages the two engineers below |
-| `elena.dev@corpus.test` | `EMPLOYEE` | Software Engineer, reports to `marco.lead` |
-| `sam.coder@corpus.test` | `EMPLOYEE` | Senior Software Engineer, reports to `marco.lead` |
-| `nadia.sales@corpus.test` | `EMPLOYEE` | Account Executive outside the manager's team, used to prove manager scoping |
+| `lapii.admin@corpus.test` | `SYSTEM_ADMIN` | Operations / platform administrator |
+| `lapii.director@corpus.test` | `HR_ADMIN` | HR Director |
+| `lapii.partner@corpus.test` | `HR` | HR Business Partner |
+| `lapii.lead@corpus.test` | `MANAGER` | Engineering Manager, manages the two engineers below |
+| `lapii.dev@corpus.test` | `EMPLOYEE` | Software Engineer, reports to `lapii.lead` |
+| `lapii.coder@corpus.test` | `EMPLOYEE` | Senior Software Engineer, reports to `lapii.lead` |
+| `lapii.sales@corpus.test` | `EMPLOYEE` | Account Executive outside the manager's team, used to prove manager scoping |
 
-All seven share one password, taken from `SEED_PASSWORD` in `.env` (default `DevPassword123!`).
-Change it there before seeding if you want a different value.
+All seven share one password, read from `SEED_PASSWORD`. Set it in your `.env` before seeding;
+`.env.example` carries the development placeholder, and `npm run db:seed` prints the value it
+actually used. No password is documented here, so this file stays safe to publish.
 
 The seed also creates five departments, eight positions, four leave types with balances, six
 recurring public holidays, three jobs (two published, one draft), three fictional candidates with
@@ -291,8 +292,8 @@ them: `MAX_UPLOAD_BYTES` (8 MiB), `MAX_REQUEST_BODY_BYTES` (512 KiB), `MAX_PAGE_
 | Variable | Secret | Default | Purpose |
 | --- | --- | --- | --- |
 | `LOCAL_DB_PATH` | no | `./data/corpus.sqlite` | SQLite file used by the scripts and integration tests. |
-| `SEED_PASSWORD` | no | `DevPassword123!` | Password assigned to all seeded accounts. Development data only. |
-| `SEED_ADMIN_EMAIL` | no | `admin@corpus.test` | Present in `.env.example` but **not currently read** by `scripts/seed-data.ts`, which derives addresses from the fictional names. |
+| `SEED_PASSWORD` | no | see `.env.example` | Password assigned to all seeded accounts. Development data only. |
+| `SEED_ADMIN_EMAIL` | no | `lapii.admin@corpus.test` | Present in `.env.example` but **not currently read** by `scripts/seed-data.ts`, which derives addresses from the `lapii.<surname>` pattern. |
 
 ### Dashboard
 

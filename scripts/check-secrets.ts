@@ -99,7 +99,6 @@ const ALLOWLIST = [
   /example/i,
   /placeholder/i,
   /unused-placeholder/i,
-  /DevPassword123!/,
   /^\$\{/,
   /at-least-32-random-characters/i,
 ]

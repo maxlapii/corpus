@@ -944,7 +944,7 @@ describe('login does not leak which accounts exist', () => {
     })
 
   it('answers an unknown account exactly as it answers a wrong password', async () => {
-    const unknown = await attempt('nobody.here@corpus.test', 'DevPassword123!')
+    const unknown = await attempt('nobody.here@corpus.test', 'not-the-seed-password-1')
     const wrong = await attempt(seedEmail(h.seed, 'employee'), 'definitely-wrong-000')
 
     // A 500 on one branch and a 401 on the other is a perfect enumeration
