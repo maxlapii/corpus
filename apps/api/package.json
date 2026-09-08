@@ -1,0 +1,23 @@
+{
+  "name": "@corpus/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev --config wrangler.toml",
+    "build": "wrangler deploy --dry-run --outdir dist --config wrangler.toml",
+    "deploy": "wrangler deploy --config wrangler.toml"
+  },
+  "dependencies": {
+    "@corpus/ai": "*",
+    "@corpus/auth": "*",
+    "@corpus/db": "*",
+    "@corpus/domain": "*",
+    "@corpus/knowledge": "*",
+    "@corpus/security": "*",
+    "@corpus/shared": "*",
+    "@corpus/telegram": "*",
+    "hono": "^4.6.2"
+  }
+}

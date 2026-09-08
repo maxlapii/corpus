@@ -1,0 +1,49 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["@cloudflare/workers-types", "node", "vitest/globals"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": false,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": false,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@corpus/shared": ["packages/shared/src/index.ts"],
+      "@corpus/shared/*": ["packages/shared/src/*"],
+      "@corpus/domain": ["packages/domain/src/index.ts"],
+      "@corpus/domain/*": ["packages/domain/src/*"],
+      "@corpus/db": ["packages/db/src/index.ts"],
+      "@corpus/db/*": ["packages/db/src/*"],
+      "@corpus/auth": ["packages/auth/src/index.ts"],
+      "@corpus/auth/*": ["packages/auth/src/*"],
+      "@corpus/security": ["packages/security/src/index.ts"],
+      "@corpus/security/*": ["packages/security/src/*"],
+      "@corpus/ai": ["packages/ai/src/index.ts"],
+      "@corpus/ai/*": ["packages/ai/src/*"],
+      "@corpus/telegram": ["packages/telegram/src/index.ts"],
+      "@corpus/telegram/*": ["packages/telegram/src/*"],
+      "@corpus/knowledge": ["packages/knowledge/src/index.ts"],
+      "@corpus/knowledge/*": ["packages/knowledge/src/*"],
+      "@corpus/api/*": ["apps/api/src/*"]
+    }
+  },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "apps/api/src/**/*.ts",
+    "tests/**/*.ts",
+    "scripts/**/*.ts"
+  ],
+  "exclude": ["node_modules", "apps/web", "**/dist", "**/.next"]
+}

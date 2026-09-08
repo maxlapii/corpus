@@ -1,0 +1,33 @@
+node_modules/
+dist/
+.next/
+out/
+.wrangler/
+
+# --- Secret-bearing local files ---------------------------------------------
+# Patterns are deliberately broad: a backup or variant of a secrets file is just
+# as sensitive as the original, and `.dev.vars` alone does not match
+# `.dev.vars.bak` or `.dev.vars.production`.
+.dev.vars
+.dev.vars.*
+*.dev.vars
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+# Editor/tool backups of any file — these have leaked credentials before.
+*.bak
+*.bak.*
+*.orig
+*~
+*.log
+.DS_Store
+coverage/
+data/*.sqlite
+data/*.sqlite-journal
+data/*.db
+tmp/

@@ -1,0 +1,107 @@
+# CORPUS API — Cloudflare Worker configuration.
+#
+# Placeholders marked TODO must be filled by the operator (see docs/deployment.md).
+# Never commit account IDs, tokens or secrets to this file.
+
+name = "corpus-api"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[observability]
+enabled = true
+
+# Retention enforcement (CLAUDE.md §29). Runs daily at 03:15 UTC; the handler is
+# idempotent, so a missed or repeated run is harmless. Cron triggers are
+# included in the Workers free tier.
+[triggers]
+crons = ["15 3 * * *"]
+
+# ---------------------------------------------------------------------------
+# Non-secret configuration. Secrets are set with `wrangler secret put NAME`.
+# ---------------------------------------------------------------------------
+[vars]
+ENVIRONMENT = "development"
+LOG_LEVEL = "info"
+AI_PROVIDER = "mock"
+AI_MODEL = ""
+AI_MAX_OUTPUT_TOKENS = "600"
+AI_MAX_CONTEXT_CHUNKS = "5"
+AI_REQUESTS_PER_HOUR = "60"
+DEFAULT_TENANT_SLUG = "default"
+PUBLIC_APP_URL = "http://localhost:3000"
+CORS_ORIGINS = "http://localhost:3000"
+
+# ---------------------------------------------------------------------------
+# D1 — structured data. Create with:
+#   wrangler d1 create corpus
+# then paste the returned database_id below.
+# ---------------------------------------------------------------------------
+[[d1_databases]]
+binding = "DB"
+database_name = "corpus"
+database_id = "TODO_D1_DATABASE_ID"
+migrations_dir = "../../migrations"
+
+# ---------------------------------------------------------------------------
+# R2 — document storage. Create with:
+#   wrangler r2 bucket create corpus-documents
+# ---------------------------------------------------------------------------
+[[r2_buckets]]
+binding = "DOCUMENTS"
+bucket_name = "corpus-documents"
+
+# ---------------------------------------------------------------------------
+# KV — rate limiting / short-lived counters (free tier).
+#   wrangler kv namespace create CORPUS_RATE_LIMIT
+# ---------------------------------------------------------------------------
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "TODO_KV_NAMESPACE_ID"
+
+# ---------------------------------------------------------------------------
+# Workers AI — inference with no API key and no external account, on the same
+# free allowance as the rest of the stack. This is what makes AI_PROVIDER
+# "workers-ai" the zero-cost default; no dashboard step is needed to enable it.
+# ---------------------------------------------------------------------------
+[ai]
+binding = "AI"
+
+[env.production]
+name = "corpus-api"
+
+[env.production.triggers]
+crons = ["15 3 * * *"]
+
+[env.production.vars]
+ENVIRONMENT = "production"
+LOG_LEVEL = "info"
+# Zero-cost default: Workers AI needs no key and no external account. Switch to
+# "google" (free tier, needs AI_API_KEY) or "anthropic"/"openai" (paid) if you
+# want a stronger model.
+AI_PROVIDER = "workers-ai"
+AI_MODEL = "@cf/meta/llama-3.1-8b-instruct"
+AI_MAX_OUTPUT_TOKENS = "600"
+AI_MAX_CONTEXT_CHUNKS = "5"
+AI_REQUESTS_PER_HOUR = "60"
+DEFAULT_TENANT_SLUG = "default"
+PUBLIC_APP_URL = "TODO_PUBLIC_APP_URL"
+CORS_ORIGINS = "TODO_PUBLIC_APP_URL"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "corpus"
+database_id = "TODO_D1_DATABASE_ID"
+migrations_dir = "../../migrations"
+
+[[env.production.r2_buckets]]
+binding = "DOCUMENTS"
+bucket_name = "corpus-documents"
+
+[[env.production.kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "TODO_KV_NAMESPACE_ID"
+
+[env.production.ai]
+binding = "AI"

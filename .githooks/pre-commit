@@ -1,0 +1,65 @@
+#!/bin/sh
+#
+# CORPUS pre-commit hook — the last chance to stop a credential entering
+# history (CLAUDE.md §58.16). CI catches it too, but by then the secret is
+# already pushed and must be *rotated*, not merely un-staged.
+#
+# NOT enabled by default. To enable, run:
+#
+#     npm run hooks:install
+#
+# which is just: git config core.hooksPath .githooks
+# To disable again: git config --unset core.hooksPath
+#
+# Scope is the staged file list plus a full scan of committable files, so it
+# checks exactly what is about to enter history — including a file that has
+# been force-staged despite .gitignore.
+
+set -e
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+fail=0
+
+# 1. Refuse files that should never be committed at all, whatever is inside
+#    them. A name-based check catches the case the content scanner cannot: a
+#    secrets file whose values happen not to match any known credential shape.
+for file in $staged; do
+  base=$(basename "$file")
+  case "$file" in
+    .env|.env.*|*/.env|*/.env.*)
+      [ "$base" = ".env.example" ] && continue
+      echo "BLOCKED: $file is an environment file and must not be committed." >&2
+      fail=1
+      ;;
+    .dev.vars|.dev.vars.*|*/.dev.vars|*/.dev.vars.*)
+      echo "BLOCKED: $file holds Worker secrets and must not be committed." >&2
+      fail=1
+      ;;
+    *.pem|*.key|*.p12|*.pfx|id_rsa*|*/id_rsa*)
+      echo "BLOCKED: $file looks like a private key." >&2
+      fail=1
+      ;;
+    *.bak|*.bak.*|*.orig)
+      echo "BLOCKED: $file is a backup file; these have leaked credentials before." >&2
+      fail=1
+      ;;
+  esac
+done
+
+if [ "$fail" -ne 0 ]; then
+  echo "" >&2
+  echo "Unstage with:  git restore --staged <file>" >&2
+  echo "If one is genuinely safe, use --no-verify and say why in the commit message." >&2
+  exit 1
+fi
+
+# 2. Scan committable content for credential-shaped strings.
+if ! npx --no-install tsx scripts/check-secrets.ts >/dev/null 2>&1; then
+  echo "BLOCKED: the secret scan found something. Details:" >&2
+  npx --no-install tsx scripts/check-secrets.ts >&2 || true
+  exit 1
+fi
+
+exit 0

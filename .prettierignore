@@ -1,0 +1,6 @@
+node_modules
+dist
+.next
+.wrangler
+coverage
+package-lock.json

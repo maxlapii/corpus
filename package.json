@@ -1,0 +1,58 @@
+{
+  "name": "corpus",
+  "private": true,
+  "version": "0.1.0",
+  "description": "CORPUS \u2014 secure HR management and AI assistant platform",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @corpus/api",
+    "dev:web": "npm run dev --workspace @corpus/web",
+    "build": "npm run typecheck && npm run build --workspace @corpus/api",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:security": "vitest run tests/security",
+    "test:e2e": "vitest run tests/e2e",
+    "test:watch": "vitest",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:seed": "tsx scripts/seed.ts",
+    "db:reset": "tsx scripts/reset.ts",
+    "db:migrate:remote": "wrangler d1 migrations apply corpus --remote --config apps/api/wrangler.toml",
+    "db:migrate:local": "wrangler d1 migrations apply corpus --local --config apps/api/wrangler.toml",
+    "deploy:api": "wrangler deploy --config apps/api/wrangler.toml",
+    "secrets:check": "tsx scripts/check-secrets.ts",
+    "typecheck:web": "npm run typecheck --workspace @corpus/web",
+    "ci": "npm run secrets:check && npm run check:contract && npm run lint && npm run typecheck && npm run typecheck:web && npm test",
+    "check:contract": "tsx scripts/check-api-contract.ts",
+    "db:seed:wrangler": "tsx scripts/seed-wrangler.ts",
+    "telegram:setup": "tsx scripts/telegram-setup.ts",
+    "telegram:status": "tsx scripts/telegram-setup.ts --status",
+    "hooks:install": "git config core.hooksPath .githooks && echo \"pre-commit hook enabled\""
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240909.0",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.5.4",
+    "@typescript-eslint/eslint-plugin": "^8.5.0",
+    "@typescript-eslint/parser": "^8.5.0",
+    "better-sqlite3": "^11.3.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.3.3",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.1",
+    "wrangler": "^3.78.0"
+  }
+}
