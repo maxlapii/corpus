@@ -8,6 +8,7 @@
  */
 
 import { createApp } from '@corpus/api/app'
+import { createContainer, type Container } from '@corpus/api/container'
 import { CSRF_HEADER, SESSION_COOKIE } from '@corpus/auth'
 import { MemoryStorageService } from '@corpus/db'
 import { DocumentIngestionService } from '@corpus/knowledge'
@@ -40,6 +41,12 @@ export interface Harness {
   request(path: string, init?: RequestInit): Promise<Response>
   json<T = any>(path: string, init?: RequestInit): Promise<{ status: number; body: T }>
   login(email: string, password?: string): Promise<AuthedClient>
+  /**
+   * The app's own container, built from the same env. Lets a test reach a
+   * service directly — storing a CV, say — without going through HTTP, while
+   * still sharing the module-scoped memory storage the routes use.
+   */
+  container: Container
   close(): void
 }
 
@@ -144,7 +151,19 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     }
   }
 
-  return { database, seed, ...(seedB ? { seedB } : {}), env, request, json, login, close: () => database.close() }
+  const container = createContainer(env as never, 'test-harness')
+
+  return {
+    database,
+    seed,
+    ...(seedB ? { seedB } : {}),
+    env,
+    request,
+    json,
+    login,
+    container,
+    close: () => database.close(),
+  }
 }
 
 async function indexSeedDocuments(database: TestDatabase, seed: SeedResult): Promise<void> {

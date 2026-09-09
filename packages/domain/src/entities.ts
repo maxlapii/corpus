@@ -346,6 +346,10 @@ export interface KnowledgeAnswer {
   status: AnswerStatus
   /** False lets an unverified person on the internal bot receive this. */
   requiresAccount: boolean
+  /** Bound Telegram command, without the slash. */
+  command: string | null
+  /** Menu text for that command. World-readable. */
+  commandDescription: string | null
   effectiveFrom: DateOnly
   effectiveTo: DateOnly | null
   phrases: string[]
@@ -354,6 +358,27 @@ export interface KnowledgeAnswer {
   updatedAt: string
   createdBy: string | null
   updatedBy: string | null
+}
+
+export interface CandidateDocument {
+  id: string
+  tenantId: string
+  candidateId: string
+  kind: 'CV' | 'COVER_LETTER' | 'OTHER'
+  filename: string
+  contentType: string
+  byteSize: number
+  checksum: string | null
+  storageKey: string
+  /** Untrusted data. Rendered as text, never interpreted (§26). */
+  extractedText: string | null
+  extractionStatus: 'OK' | 'EMPTY' | 'UNSUPPORTED' | 'FAILED'
+  extractor: string | null
+  extractionWarnings: string[]
+  injectionFlagged: boolean
+  source: 'TELEGRAM_EXTERNAL' | 'DASHBOARD'
+  uploadedAt: string
+  uploadedByUserId: string | null
 }
 
 // --- Conversations

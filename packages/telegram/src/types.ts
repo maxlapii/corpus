@@ -20,6 +20,7 @@ export interface TelegramMessage {
   chat: TelegramChat
   date: number
   text?: string
+  caption?: string
   document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number }
 }
 
@@ -48,4 +49,11 @@ export interface NormalisedUpdate {
   /** Display name, retained only for logging — never used for authorisation. */
   displayName: string
   isBot: boolean
+  /** Present when the user attached a file. Untrusted, like everything else. */
+  document: {
+    fileId: string
+    fileName: string
+    mimeType: string
+    fileSize: number
+  } | null
 }

@@ -24,7 +24,7 @@ RBAC is one input to that decision. Nothing in this document is evaluated by the
 | Generator | `scripts/generate-rbac-migration.ts` | `npx tsx scripts/generate-rbac-migration.ts` |
 | Drift guard | `tests/integration/rbac-consistency.test.ts` | Fails if code and migration diverge. |
 
-The database tables (`roles`, `permissions`, `role_permissions`, `user_roles`) are created in `migrations/0001_core_identity.sql` and populated by the most recent generated reference migration — `0008` at the time of writing, which supersedes `0006`.
+The database tables (`roles`, `permissions`, `role_permissions`, `user_roles`) are created in `migrations/0001_core_identity.sql` and populated by the most recent generated reference migration — `0011` at the time of writing, which supersedes `0006` and `0008`.
 
 ## Where RBAC sits in the decision
 
@@ -76,7 +76,7 @@ Notes:
 
 ## Permissions
 
-Forty-three permissions, defined in `PERMISSIONS` (`packages/domain/src/roles.ts`). Descriptions are from `PERMISSION_DESCRIPTIONS` in `scripts/generate-rbac-migration.ts` and are what the `permissions` table stores.
+Forty-five permissions, defined in `PERMISSIONS` (`packages/domain/src/roles.ts`). Descriptions are from `PERMISSION_DESCRIPTIONS` in `scripts/generate-rbac-migration.ts` and are what the `permissions` table stores.
 
 ### Employee directory
 
@@ -113,6 +113,8 @@ Forty-three permissions, defined in `PERMISSIONS` (`packages/domain/src/roles.ts
 | `job.delete` | Delete or archive jobs |
 | `candidate.read` | Read candidate records |
 | `candidate.update` | Update candidate records |
+| `candidate.document.read` | Read and preview candidate CVs |
+| `candidate.document.manage` | Upload, replace and delete candidate CVs |
 | `candidate.create.public` | Create a candidate record via public application |
 | `application.read` | Read applications |
 | `application.read.self` | Read own application status |
@@ -193,6 +195,8 @@ Generated from `ROLE_PERMISSIONS` and `PUBLIC_PERMISSIONS` in `packages/domain/s
 | `policy.create` |  |  | x | x | x |  |
 | `policy.update` |  |  | x | x | x |  |
 | `policy.delete` |  |  |  | x | x |  |
+| `candidate.document.read` |  |  | x | x | x |  |
+| `candidate.document.manage` |  |  | x | x | x |  |
 | `faq.read` | x | x | x | x | x |  |
 | `faq.manage` |  |  | x | x | x |  |
 | `faq.read.public` |  |  |  |  | x | x |
@@ -359,6 +363,11 @@ Published jobs are classified `PUBLIC`; drafts and closed jobs are `INTERNAL`, s
 
 | Rule (resource:action) | Zones | Grant ladder (permission / ownership / ceiling) | maxRiskInChat |
 |---|---|---|---|
+| `candidate.document:list` | INTERNAL | `candidate.document.read` / ANY / CONFIDENTIAL | — |
+| `candidate.document:read` | INTERNAL | `candidate.document.read` / ANY / CONFIDENTIAL | `maxRiskInChat: LOW` — a CV is bulk personal data and is never rendered into a chat |
+| `candidate.document:create` | INTERNAL | `candidate.document.manage` / ANY / CONFIDENTIAL | — |
+| `candidate.document:update` | INTERNAL | `candidate.document.manage` / ANY / CONFIDENTIAL | — |
+| `candidate.document:delete` | INTERNAL | `candidate.document.manage` / ANY / CONFIDENTIAL | — |
 | `knowledge.document:read` | INTERNAL | `policy.read` / ANY / INTERNAL<br>`policy.read.confidential` / ANY / CONFIDENTIAL<br>`policy.read.restricted` / ANY / RESTRICTED | — |
 | `knowledge.document:list` | INTERNAL | `policy.read` / ANY / INTERNAL<br>`policy.read.confidential` / ANY / CONFIDENTIAL<br>`policy.read.restricted` / ANY / RESTRICTED | — |
 | `knowledge.chunk:search` | INTERNAL | `policy.read` / ANY / INTERNAL<br>`policy.read.confidential` / ANY / CONFIDENTIAL<br>`policy.read.restricted` / ANY / RESTRICTED | — |

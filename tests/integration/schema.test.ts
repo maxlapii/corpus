@@ -31,12 +31,15 @@ describe('database schema', () => {
       '0007_knowledge_answers.sql',
       '0008_rbac_reference.sql',
       '0009_answer_account_gate.sql',
+      '0010_candidate_documents.sql',
+      '0011_rbac_reference.sql',
+      '0012_answer_commands.sql',
     ])
 
     // Re-running must be a no-op.
     const second = await runMigrations(handle, loadMigrationsFromDir(migrationsDir()))
     expect(second.applied).toEqual([])
-    expect(second.skipped).toHaveLength(9)
+    expect(second.skipped).toHaveLength(12)
   })
 
   it('creates every expected table', async () => {
@@ -48,7 +51,7 @@ describe('database schema', () => {
     for (const table of [
       'tenants', 'roles', 'permissions', 'role_permissions', 'users', 'user_roles',
       'sessions', 'telegram_accounts', 'verification_codes',
-      'knowledge_answers', 'knowledge_answer_phrases',
+      'knowledge_answers', 'knowledge_answer_phrases', 'candidate_documents',
       'departments', 'positions', 'employees', 'employee_managers', 'employee_compensation',
       'leave_types', 'leave_balances', 'leave_requests', 'leave_approvals', 'holidays',
       'jobs', 'job_requirements', 'candidates', 'applications', 'application_events',

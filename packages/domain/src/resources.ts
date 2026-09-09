@@ -15,6 +15,7 @@ export const RESOURCE_TYPES = [
   'job',
   'job.requirement',
   'candidate',
+  'candidate.document',
   'application',
   'interview',
   'offer',

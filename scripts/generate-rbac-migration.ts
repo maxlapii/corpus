@@ -13,7 +13,7 @@
  * and an upgraded one converge on the same rows.
  */
 
-const TARGET = 'migrations/0008_rbac_reference.sql'
+const TARGET = 'migrations/0011_rbac_reference.sql'
 
 import { writeFileSync } from 'node:fs'
 import { PERMISSIONS, ROLES, ROLE_PERMISSIONS } from '@corpus/domain'
@@ -62,6 +62,8 @@ const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   'policy.read.restricted': 'Read RESTRICTED knowledge documents',
   'policy.create': 'Create knowledge documents',
   'policy.update': 'Update knowledge documents',
+  'candidate.document.read': 'Read and preview candidate CVs',
+  'candidate.document.manage': 'Upload, replace and delete candidate CVs',
   'faq.read.public': 'Read PUBLIC curated bot answers as an anonymous candidate',
   'faq.read': 'Read curated bot answers for the internal zone',
   'faq.manage': 'Author, publish and archive curated bot answers',

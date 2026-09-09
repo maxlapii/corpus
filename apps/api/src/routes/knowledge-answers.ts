@@ -8,6 +8,8 @@
  *   POST   /knowledge/answers/:id/status    — publish / archive
  *   DELETE /knowledge/answers/:id
  *   POST   /knowledge/answers/preview       — what a bot would return, unsaved
+ *   GET    /knowledge/answers/commands      — the menu each bot would publish
+ *   POST   /knowledge/answers/commands/sync — push those menus to Telegram
  *   GET    /knowledge/answers/unanswered    — the training backlog
  *   POST   /knowledge/answers/unanswered/:id/resolve
  *
@@ -35,6 +37,7 @@ import {
   ANSWER_AUDIENCES,
   ANSWER_STATUSES,
   MAX_TRAINING_PHRASES,
+  MAX_COMMAND_DESCRIPTION,
   canTransitionAnswer,
   validateAnswerDraft,
   type AnswerAudience,
@@ -56,6 +59,8 @@ const writeBody = object({
   classification: str({ enum: CLASSIFICATIONS }),
   status: optional(str({ enum: ANSWER_STATUSES })),
   requiresAccount: optional(bool()),
+  command: optional(str({ max: 40 })),
+  commandDescription: optional(str({ max: MAX_COMMAND_DESCRIPTION })),
   phrases: optional(arrayOf(str({ min: 3, max: 300 }), { max: MAX_TRAINING_PHRASES })),
   effectiveFrom: optional(dateOnly()),
   effectiveTo: optional(dateOnly()),
@@ -179,6 +184,61 @@ knowledgeAnswerRoutes.post('/preview', async (c) => {
   })
 })
 
+/**
+ * What each bot's Telegram command menu would contain. Read-only, so an author
+ * can see the effect of a change before pushing it.
+ */
+knowledgeAnswerRoutes.get('/commands', async (c) => {
+  const container = c.get('container')
+  const identity = userIdentityOf(c)
+
+  await container.gateway.require({
+    identity,
+    action: 'list',
+    resource: { type: 'knowledge.answer', tenantId: identity.tenantId },
+    requestId: c.get('requestId'),
+    skipAudit: true,
+  })
+
+  const menus = await Promise.all(
+    (['EXTERNAL', 'INTERNAL'] as const).map((compartment) =>
+      container.commandSync.preview({
+        tenantId: identity.tenantId,
+        compartment,
+        onDate: container.today,
+      }),
+    ),
+  )
+  return c.json({
+    menus,
+    note:
+      'Telegram shows a command menu to anyone who opens the bot, before any verification, ' +
+      'so only PUBLIC answers are listed. A command on a more sensitive answer still works ' +
+      'for the people authorised to use it — it is just not advertised.',
+  })
+})
+
+/** Push the menus to Telegram. Audited: it changes what the world can see. */
+knowledgeAnswerRoutes.post('/commands/sync', async (c) => {
+  const container = c.get('container')
+  const identity = userIdentityOf(c)
+
+  await container.gateway.require({
+    identity,
+    action: 'update',
+    resource: { type: 'knowledge.answer', tenantId: identity.tenantId },
+    intent: 'POLICY_MANAGE',
+    requestId: c.get('requestId'),
+    metadata: { operation: 'telegram.setMyCommands' },
+  })
+
+  const results = await container.commandSync.syncAll({
+    tenantId: identity.tenantId,
+    onDate: container.today,
+  })
+  return c.json({ results })
+})
+
 knowledgeAnswerRoutes.get('/', async (c) => {
   const container = c.get('container')
   const identity = userIdentityOf(c)
@@ -260,6 +320,8 @@ knowledgeAnswerRoutes.post('/', async (c) => {
       ...draft,
       category: body.category,
       status: (body.status as AnswerStatus | undefined) ?? 'DRAFT',
+      command: draft.command ?? null,
+      commandDescription: draft.commandDescription ?? null,
       effectiveTo: draft.effectiveTo ?? null,
       phrases: draft.phrases ?? [],
       sourceUnansweredId: body.sourceUnansweredId ?? null,
@@ -312,6 +374,8 @@ knowledgeAnswerRoutes.put('/:id', async (c) => {
       ...draft,
       category: body.category,
       status,
+      command: draft.command ?? null,
+      commandDescription: draft.commandDescription ?? null,
       effectiveTo: draft.effectiveTo ?? null,
       phrases: draft.phrases ?? [],
       actorUserId: identity.userId,
@@ -388,6 +452,8 @@ interface WriteBody {
   classification: string
   phrases?: string[]
   requiresAccount?: boolean
+  command?: string
+  commandDescription?: string
   effectiveFrom?: string
   effectiveTo?: string
 }
@@ -399,6 +465,8 @@ function toDraft(body: WriteBody, today: string) {
     audience: body.audience as AnswerAudience,
     classification: body.classification as Classification,
     requiresAccount: body.requiresAccount,
+    command: body.command ?? null,
+    commandDescription: body.commandDescription ?? null,
     phrases: body.phrases ?? [],
     effectiveFrom: body.effectiveFrom ?? today,
     effectiveTo: body.effectiveTo ?? null,

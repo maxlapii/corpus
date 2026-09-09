@@ -20,6 +20,7 @@ import { employeeRoutes, orgRoutes } from './routes/employees.js'
 import { healthRoutes } from './routes/health.js'
 import { knowledgeRoutes } from './routes/knowledge.js'
 import { knowledgeAnswerRoutes } from './routes/knowledge-answers.js'
+import { candidateDocumentRoutes } from './routes/candidate-documents.js'
 import { holidayRoutes, leaveRoutes } from './routes/leave.js'
 import {
   applicationRoutes,
@@ -64,6 +65,7 @@ export function createApp(): Hono<AppBindings> {
   internal.route('/applications', applicationRoutes)
   internal.route('/policies', knowledgeRoutes)
   internal.route('/knowledge/answers', knowledgeAnswerRoutes)
+  internal.route('/cvs', candidateDocumentRoutes)
   internal.route('/reports', reportRoutes)
   internal.route('/audit', auditRoutes)
   internal.route('/security', securityRoutes)

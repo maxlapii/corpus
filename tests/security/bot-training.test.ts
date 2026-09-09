@@ -750,3 +750,292 @@ describe('the internal bot and unverified users', () => {
     expect(await lastInternalReply()).not.toContain('HR Director after a second')
   })
 })
+
+describe('a curated answer never pre-empts a person-specific tool', () => {
+  let h: Harness
+  beforeEach(async () => {
+    h = await createHarness()
+  })
+  afterEach(() => h.close())
+
+  it('answers "my leave balance" from the database, not from approved prose', async () => {
+    // Deliberately worded to match: the words overlap heavily, and without the
+    // person-specific exclusion this answer wins on coverage alone.
+    await authorAnswer(h, {
+      question: 'What is the annual leave balance policy?',
+      answer: 'Everyone is entitled to 18 days of paid annual leave each year.',
+      audience: 'INTERNAL',
+      classification: 'PUBLIC',
+      requiresAccount: false,
+      phrases: ['leave balance', 'my leave balance', 'what is my remaining leave balance'],
+    })
+
+    const employee = await h.login(seedEmail(h.seed, 'employee'))
+    const asked = await employee.post('/assistant/ask', {
+      message: 'What is my remaining leave balance?',
+    })
+
+    expect(asked.status).toBe(200)
+    // The tool ran; the curated text did not short-circuit it.
+    expect(asked.body.toolCalls.map((t: { name: string }) => t.name)).toContain(
+      'get_my_leave_balance',
+    )
+    expect(asked.body.reply).not.toContain('Everyone is entitled to 18 days')
+  })
+
+  it('still serves a curated answer for an organisation-wide question', async () => {
+    await authorAnswer(h, {
+      question: 'What is the company policy on carrying leave over?',
+      answer: 'Up to five unused days may be carried into the following year.',
+      audience: 'INTERNAL',
+      classification: 'PUBLIC',
+      requiresAccount: false,
+    })
+
+    const employee = await h.login(seedEmail(h.seed, 'employee'))
+    const asked = await employee.post('/assistant/ask', {
+      message: 'What is the company policy on carrying leave over?',
+    })
+    expect(asked.body.reply).toContain('five unused days')
+  })
+})
+
+describe('bot commands bound to curated answers', () => {
+  let h: Harness
+  beforeEach(async () => {
+    h = await createHarness()
+  })
+  afterEach(() => h.close())
+
+  const withCommand = (
+    input: Parameters<typeof authorAnswer>[1] & { command: string; commandDescription: string },
+  ) =>
+    h.database.repos.knowledgeAnswers.create(tenantScope(h.seed.tenantId), {
+      question: input.question,
+      answer: input.answer,
+      category: 'GENERAL',
+      audience: input.audience,
+      classification: input.classification,
+      status: input.status ?? 'ACTIVE',
+      ...(input.requiresAccount === undefined ? {} : { requiresAccount: input.requiresAccount }),
+      command: input.command,
+      commandDescription: input.commandDescription,
+      effectiveFrom: '2020-01-01',
+      effectiveTo: null,
+      phrases: input.phrases ?? [],
+      actorUserId: null,
+    })
+
+  const menu = (compartment: 'EXTERNAL' | 'INTERNAL') =>
+    h.database.repos.knowledgeAnswers.listMenuCommands(tenantScope(h.seed.tenantId), {
+      compartment,
+      onDate: '2026-06-01',
+    })
+
+  it('lists a PUBLIC external command in the recruitment bot menu only', async () => {
+    await withCommand({
+      question: 'How should I prepare for an interview?',
+      answer: 'Bring photo identification and read the job advert again.',
+      audience: 'EXTERNAL',
+      classification: 'PUBLIC',
+      command: 'interview_tips',
+      commandDescription: 'How to prepare for an interview',
+    })
+
+    expect((await menu('EXTERNAL')).map((c) => c.command)).toContain('interview_tips')
+    expect((await menu('INTERNAL')).map((c) => c.command)).not.toContain('interview_tips')
+  })
+
+  it.each(['INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'] as const)(
+    'never lists a %s answer in a menu, because the menu is visible before verification',
+    async (classification) => {
+      await withCommand({
+        question: `Sensitive ${classification} guidance`,
+        answer: SECRET_ANSWER,
+        audience: 'INTERNAL',
+        classification,
+        command: `secret_${classification.toLowerCase()}`,
+        commandDescription: 'Should never appear in a menu',
+      })
+
+      for (const compartment of ['EXTERNAL', 'INTERNAL'] as const) {
+        const commands = (await menu(compartment)).map((c) => c.command)
+        expect(commands, compartment).not.toContain(`secret_${classification.toLowerCase()}`)
+      }
+    },
+  )
+
+  it.each(['DRAFT', 'ARCHIVED'] as const)('never lists a %s answer', async (status) => {
+    await withCommand({
+      question: 'Unpublished command',
+      answer: 'Not live.',
+      audience: 'BOTH',
+      classification: 'PUBLIC',
+      status,
+      command: 'unpublished',
+      commandDescription: 'Not live yet',
+    })
+    expect((await menu('EXTERNAL')).map((c) => c.command)).not.toContain('unpublished')
+  })
+
+  it('refuses two answers claiming the same command', async () => {
+    await withCommand({
+      question: 'First claim',
+      answer: 'A.',
+      audience: 'BOTH',
+      classification: 'PUBLIC',
+      command: 'duplicate',
+      commandDescription: 'First',
+    })
+    await expect(
+      withCommand({
+        question: 'Second claim',
+        answer: 'B.',
+        audience: 'BOTH',
+        classification: 'PUBLIC',
+        command: 'duplicate',
+        commandDescription: 'Second',
+      }),
+    ).rejects.toThrow()
+  })
+
+  it('the database refuses a command with no menu description', async () => {
+    await expect(
+      h.database.repos.knowledgeAnswers.create(tenantScope(h.seed.tenantId), {
+        question: 'Bare command',
+        answer: 'No description.',
+        category: 'GENERAL',
+        audience: 'BOTH',
+        classification: 'PUBLIC',
+        status: 'ACTIVE',
+        command: 'bare',
+        commandDescription: '   ',
+        effectiveFrom: '2020-01-01',
+        effectiveTo: null,
+        phrases: [],
+        actorUserId: null,
+      }),
+    ).rejects.toThrow()
+  })
+
+  it('the API refuses a command that shadows a built-in', async () => {
+    const hrAdmin = await h.login(seedEmail(h.seed, 'hrAdmin'))
+    const response = await hrAdmin.post('/knowledge/answers', {
+      question: 'Hijack the verification flow',
+      answer: 'Should never be created.',
+      audience: 'INTERNAL',
+      classification: 'PUBLIC',
+      requiresAccount: false,
+      command: 'verify',
+      commandDescription: 'Definitely not',
+    })
+    expect(response.status).toBe(400)
+    expect(String(response.body.error.message)).toMatch(/built-in/i)
+  })
+
+  it.each(['employee', 'manager'] as const)('%s cannot read or push the menus', async (key) => {
+    const client = await h.login(seedEmail(h.seed, key))
+    expect((await client.get('/knowledge/answers/commands')).status).toBe(403)
+    expect((await client.post('/knowledge/answers/commands/sync', {})).status).toBe(403)
+  })
+
+  it('the menu preview always includes the built-ins alongside curated commands', async () => {
+    // `/benefits` comes from the seed fixtures, on a BOTH-audience answer.
+
+    const hr = await h.login(seedEmail(h.seed, 'hr'))
+    const response = await hr.get('/knowledge/answers/commands')
+    expect(response.status).toBe(200)
+
+    for (const m of response.body.menus) {
+      const names = m.effective.map((c: { command: string }) => c.command)
+      // setMyCommands replaces the whole list, so losing these would delete
+      // the bot's own commands from the menu.
+      expect(names, m.compartment).toContain('start')
+      expect(names, m.compartment).toContain('help')
+      expect(names, m.compartment).toContain('benefits')
+    }
+  })
+
+  it('running a command goes through the ordinary authorisation path', async () => {
+    // Bound to an account-gated answer, so an unverified Telegram user running
+    // the command must get the verification prompt, not the text.
+    await withCommand({
+      question: 'What is the payroll escalation path?',
+      answer: 'Escalate to the payroll lead, then to the HR Director.',
+      audience: 'INTERNAL',
+      classification: 'INTERNAL',
+      requiresAccount: true,
+      command: 'payroll',
+      commandDescription: 'Payroll escalation',
+    })
+
+    const updateId = Math.floor(Math.random() * 1e9)
+    const response = await h.request('/telegram/internal', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-telegram-bot-api-secret-token': TEST_WEBHOOK_SECRET,
+      },
+      body: JSON.stringify({
+        update_id: updateId,
+        message: {
+          message_id: updateId,
+          chat: { id: 424001, type: 'private' },
+          date: Math.floor(Date.now() / 1000),
+          from: { id: 424001, first_name: 'Stranger' },
+          text: '/payroll',
+        },
+      }),
+    })
+    expect(response.status).toBe(200)
+
+    const rows = await h.database.db.many<{ content: string }>(
+      `SELECT m.content FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id
+        WHERE m.tenant_id = ? AND c.channel = 'TELEGRAM_INTERNAL' AND m.role = 'assistant'
+        ORDER BY m.created_at DESC LIMIT 1`,
+      [h.seed.tenantId],
+    )
+    expect(rows.map((r) => r.content).join('')).not.toContain('payroll lead')
+  })
+
+  it('an ungated command answers an unverified user', async () => {
+    await withCommand({
+      question: 'What are the standard working hours?',
+      answer: 'Standard hours are 08:30 to 17:30, Monday to Friday.',
+      audience: 'INTERNAL',
+      classification: 'PUBLIC',
+      requiresAccount: false,
+      command: 'hours',
+      commandDescription: 'Standard working hours',
+    })
+
+    const updateId = Math.floor(Math.random() * 1e9)
+    await h.request('/telegram/internal', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-telegram-bot-api-secret-token': TEST_WEBHOOK_SECRET,
+      },
+      body: JSON.stringify({
+        update_id: updateId,
+        message: {
+          message_id: updateId,
+          chat: { id: 424002, type: 'private' },
+          date: Math.floor(Date.now() / 1000),
+          from: { id: 424002, first_name: 'Stranger' },
+          text: '/hours',
+        },
+      }),
+    })
+
+    const rows = await h.database.db.many<{ content: string }>(
+      `SELECT m.content FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id
+        WHERE m.tenant_id = ? AND c.channel = 'TELEGRAM_INTERNAL' AND m.role = 'assistant'
+        ORDER BY m.created_at DESC LIMIT 1`,
+      [h.seed.tenantId],
+    )
+    expect(rows[0]?.content ?? '').toContain('08:30 to 17:30')
+  })
+})

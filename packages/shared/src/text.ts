@@ -8,6 +8,17 @@ const CONTROL_CHARS = new RegExp('[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\
 // and prompt-smuggling vectors in uploaded documents.
 const ZERO_WIDTH = new RegExp('[\\u200B-\\u200D\\u2060\\uFEFF]', 'g')
 
+/**
+ * Strip control and zero-width characters without touching spacing.
+ *
+ * For values that are not prose — a filename that becomes a storage key and a
+ * Content-Disposition header — where collapsing whitespace would be wrong but
+ * a smuggled control character is still unacceptable.
+ */
+export function stripControlCharacters(input: string): string {
+  return input.replace(CONTROL_CHARS, '').replace(ZERO_WIDTH, '')
+}
+
 /** Collapse whitespace and strip control / zero-width characters. */
 export function normaliseWhitespace(input: string): string {
   return input

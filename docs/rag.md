@@ -52,6 +52,9 @@ The governing invariant applies here in a specific form (§24):
 | HTTP surface (`/policies*`) | `apps/api/src/routes/knowledge.ts` (mounted in `apps/api/src/app.ts`) |
 | AI tool | `search_hr_policy` in `packages/ai/src/tools/internal-self.ts` |
 | Object storage for originals | `packages/db/src/storage.ts` |
+| CV intake (shared by bot and dashboard) | `packages/knowledge/src/cv-intake.ts` |
+| CV ↔ job matching | `packages/domain/src/cv-matching.ts` |
+| CV storage and metadata | `packages/db/src/repositories/candidate-documents.ts`, `migrations/0010_candidate_documents.sql` |
 | Curated answers: domain rules | `packages/domain/src/answer-flow.ts` |
 | Curated answers: retrieval service | `packages/knowledge/src/answer-service.ts` |
 | Curated answers: SQL | `packages/db/src/repositories/knowledge-answers.ts` |
@@ -877,6 +880,25 @@ Below the floor the curated path declines and the turn continues to normal tool 
 document retrieval. Declining is always safe; serving the wrong approved answer is not. The
 threshold is `limits.curatedAnswerMinCoverage` on the orchestrator.
 
+### 14.4a Bot commands
+
+An answer can also be bound to a Telegram command, so `/benefits` answers from approved text.
+
+Two things are kept apart on purpose:
+
+| | |
+|---|---|
+| **Running** `/command` | The bot looks up the answer, takes its **question**, and feeds that into the ordinary turn. Audience, classification and the account gate all still apply, so an unauthorised command behaves exactly like an unknown one and does not reveal that it exists. |
+| **Advertising** it | Telegram shows a bot's command menu to anyone who opens the chat, *before any verification*. Publishing a command is therefore a public act whichever bot it belongs to, so only `ACTIVE`, in-date, **PUBLIC** answers reach the menu. |
+
+A command on a CONFIDENTIAL answer still works for the people authorised to use it; it is simply
+not listed. The menu description is authored rather than derived from the question, because the
+question may say more than a world-readable menu should — the schema refuses a command without one.
+
+`RESERVED_BOT_COMMANDS` blocks an author from taking `/verify`, `/balance` and the rest: shadowing
+the verification flow would be an obvious hijack. Syncing pushes built-ins **and** curated commands
+together, because `setMyCommands` replaces the whole list.
+
 ### 14.5 Where it sits in the turn
 
 The lookup runs **before** the intent zone gate, with one exclusion:
@@ -885,6 +907,7 @@ The lookup runs **before** the intent zone gate, with one exclusion:
 classify intent
       ↓
  risk === RESTRICTED ? ───yes──→ skip the curated path entirely
+ target SELF/OTHER?   ───yes──→ skip: the answer differs per person (§38)
       │ no
       ↓
 gateway.authorize(knowledge.answer:search)   ← ceiling + audience
@@ -899,7 +922,12 @@ Running before the zone gate is deliberate: a candidate asking a policy-shaped q
 the answer HR published *for candidates*, not a zone refusal, and an approved `PUBLIC` answer is not
 internal data. Excluding `RESTRICTED`-risk intents is what keeps that safe — a salary question still
 reaches the gate and still leaves an audited `DENY`, whatever curated text happens to match it.
-`tests/security/bot-training.test.ts` pins both halves.
+
+Person-specific intents (`target` of `SELF` or `OTHER_EMPLOYEE`) are excluded for a different
+reason: their true answer differs per asker, so approved static text can never be right for them
+however well it matches the words. This is not theoretical — a seeded answer about leave benefits
+was found matching "what is my remaining leave balance" at exactly the coverage floor and
+pre-empting `get_my_leave_balance`. `tests/security/bot-training.test.ts` pins all three rules.
 
 ### 14.6 Response filtering
 
@@ -934,6 +962,48 @@ When the assistant refuses for lack of grounding (§8), the question is written 
 new row back through `source_unanswered_id` and marks the question resolved with
 `resolved_answer_id`. That closes the loop the feature exists for: the bot's own gaps become the
 work queue for filling them.
+
+---
+
+## 14a. CV extraction
+
+CVs go through the same extractor as policy documents, with two formats added because a CV feature
+that cannot read a PDF is not a feature:
+
+| Format | Extractor | Status |
+|---|---|---|
+| DOCX | A minimal ZIP reader over `word/document.xml`, inflated with `DecompressionStream('deflate-raw')` | **Works.** No dependency; only that one entry is read |
+| TXT / MD | Native | **Works.** |
+| PDF | None | **Accepted and stored, not parsed** — see below |
+
+### Why PDF text is not extracted
+
+`unpdf` (a serverless pdf.js build) was implemented, tested and then removed. It extracts text
+correctly under Node, and fails under workerd: once wrangler has bundled it, pdf.js's `PDFWorker`
+static initialiser throws
+
+```text
+TypeError: Cannot set properties of undefined (setting '_isSameOrigin')
+```
+
+so every upload came back with empty text. This was caught by driving a real `wrangler dev` Worker,
+**not** by the test suite — Vitest runs under Node, where it passed. It is the same class of defect
+as the `DUMMY_HASH` login regression: correct in Node, broken in the Worker.
+
+Keeping it would have cost ~590 KB gzipped of a 1 MB free-tier budget (the bundle went 113 KB →
+706 KB) for a feature that returns nothing in production, so it was removed. The bundle is back to
+121 KB.
+
+A PDF is still a first-class upload: it is accepted, stored, checksummed and downloadable, and its
+`extraction_status` is `EMPTY` with a warning telling the reader to paste the text in. Once someone
+does, `extractor` becomes `manual` and the CV matches normally.
+
+Two routes to fixing it properly, neither attempted here:
+
+1. Extract in the browser at upload time — pdf.js runs fine in a browser — and post the text
+   alongside the file. Covers dashboard uploads but not Telegram ones, which have no browser.
+2. Get pdf.js to survive wrangler's bundler (a newer wrangler, or a build target that leaves class
+   static blocks alone). Whoever tries this must verify it in a real Worker, not only in Vitest.
 
 ---
 

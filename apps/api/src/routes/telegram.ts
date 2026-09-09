@@ -96,8 +96,10 @@ for (const bot of ['external', 'internal'] as const) {
           rateLimiter: container.rateLimiter,
           replayGuard: container.replayGuard,
           logger: container.logger,
+          cvIntake: container.cvIntake,
           tenantId: tenant.id,
           messageRule: container.rateLimits.telegramPerUser,
+          uploadRule: container.rateLimits.applicationPerSubject,
         }).handle(update)
       } else {
         await new InternalBot({

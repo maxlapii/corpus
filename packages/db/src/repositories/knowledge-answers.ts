@@ -9,6 +9,7 @@
 import { nowIso, prefixedId, toFtsQuery, type DateOnly } from '@corpus/shared'
 import {
   buildAnswerSearchText,
+  normaliseCommand,
   resolveRequiresAccount,
   type AnswerAudience,
   type AnswerStatus,
@@ -56,6 +57,8 @@ export interface AnswerWriteInput {
   classification: Classification
   status: AnswerStatus
   requiresAccount?: boolean
+  command?: string | null
+  commandDescription?: string | null
   effectiveFrom: DateOnly
   effectiveTo: DateOnly | null
   phrases: readonly string[]
@@ -73,6 +76,8 @@ const mapAnswer = (row: Row, phrases: string[]): KnowledgeAnswer => ({
   classification: asString(row.classification) as Classification,
   status: asString(row.status) as AnswerStatus,
   requiresAccount: asNumber(row.requires_account) === 1,
+  command: asStringOrNull(row.command),
+  commandDescription: asStringOrNull(row.command_description),
   effectiveFrom: asString(row.effective_from),
   effectiveTo: asStringOrNull(row.effective_to),
   phrases,
@@ -287,6 +292,56 @@ export class KnowledgeAnswerRepository {
     return rows.map(normaliseHit)
   }
 
+  /**
+   * The answer bound to `/command`, whatever its status or classification.
+   *
+   * Deliberately unfiltered: the caller still runs the ordinary authorisation
+   * and retrieval path over the result, and a lookup that pre-filtered here
+   * would make "no such command" and "not for you" indistinguishable to the
+   * code that has to tell them apart.
+   */
+  async findByCommand(scope: TenantScope, command: string): Promise<KnowledgeAnswer | null> {
+    const normalised = commandOf(command)
+    if (!normalised) return null
+    const row = await this.db.one<Row>(
+      'SELECT * FROM knowledge_answers WHERE tenant_id = ? AND command = ?',
+      [scope.tenantId, normalised],
+    )
+    if (!row) return null
+    return mapAnswer(row, await this.phrasesFor(scope, asString(row.id)))
+  }
+
+  /**
+   * Commands publishable to a bot's command menu.
+   *
+   * PUBLIC only, because Telegram shows the menu to anyone who opens the bot,
+   * before any verification. An answer above PUBLIC keeps a working command;
+   * it is simply not listed.
+   */
+  async listMenuCommands(
+    scope: TenantScope,
+    input: { compartment: AnswerCompartment; onDate: DateOnly },
+  ): Promise<{ command: string; description: string }[]> {
+    const audiences = AUDIENCES_FOR_COMPARTMENT[input.compartment]
+    const rows = await this.db.many<Row>(
+      `SELECT command, command_description FROM knowledge_answers
+        WHERE tenant_id = ?
+          AND command IS NOT NULL
+          AND command_description IS NOT NULL
+          AND status = 'ACTIVE'
+          AND classification = 'PUBLIC'
+          AND audience IN (${audiences.map(() => '?').join(', ')})
+          AND effective_from <= ?
+          AND (effective_to IS NULL OR effective_to >= ?)
+        ORDER BY command`,
+      [scope.tenantId, ...audiences, input.onDate, input.onDate],
+    )
+    return rows.map((row) => ({
+      command: asString(row.command),
+      description: asString(row.command_description),
+    }))
+  }
+
   async create(scope: TenantScope, input: AnswerWriteInput): Promise<KnowledgeAnswer> {
     const id = prefixedId('kba')
     const now = nowIso()
@@ -295,9 +350,10 @@ export class KnowledgeAnswerRepository {
     await this.db.run(
       `INSERT INTO knowledge_answers
          (id, tenant_id, question, answer, category, audience, classification, status,
-          requires_account, effective_from, effective_to, search_text, source_unanswered_id,
+          requires_account, command, command_description,
+          effective_from, effective_to, search_text, source_unanswered_id,
           created_at, updated_at, created_by, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         scope.tenantId,
@@ -308,6 +364,8 @@ export class KnowledgeAnswerRepository {
         input.classification,
         input.status,
         resolveRequiresAccount(input.audience, input.requiresAccount) ? 1 : 0,
+        commandOf(input.command),
+        commandOf(input.command) ? (input.commandDescription ?? '').trim() : null,
         input.effectiveFrom,
         input.effectiveTo,
         buildAnswerSearchText(input.question, phrases),
@@ -334,7 +392,8 @@ export class KnowledgeAnswerRepository {
     const result = await this.db.run(
       `UPDATE knowledge_answers
           SET question = ?, answer = ?, category = ?, audience = ?, classification = ?,
-              status = ?, requires_account = ?, effective_from = ?, effective_to = ?,
+              status = ?, requires_account = ?, command = ?, command_description = ?,
+              effective_from = ?, effective_to = ?,
               search_text = ?, updated_at = ?, updated_by = ?
         WHERE tenant_id = ? AND id = ?`,
       [
@@ -345,6 +404,8 @@ export class KnowledgeAnswerRepository {
         input.classification,
         input.status,
         resolveRequiresAccount(input.audience, input.requiresAccount) ? 1 : 0,
+        commandOf(input.command),
+        commandOf(input.command) ? (input.commandDescription ?? '').trim() : null,
         input.effectiveFrom,
         input.effectiveTo,
         buildAnswerSearchText(input.question, phrases),
@@ -422,6 +483,13 @@ export class KnowledgeAnswerRepository {
       )
     }
   }
+}
+
+/** Empty string and whitespace both mean "no command". */
+function commandOf(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  const command = normaliseCommand(raw)
+  return command.length > 0 ? command : null
 }
 
 function normalisePhrases(phrases: readonly string[]): string[] {

@@ -19,7 +19,7 @@ Workers AI, and a Next.js dashboard on Pages. No API key, no server, no monthly 
 | --- | --- |
 | **A body of people** — the root of *corporate*, *corporation*, *corps* | The workforce: employees, departments, managers, candidates |
 | **A body of texts** — a corpus is an indexed document collection | The knowledge base: policies chunked, versioned and retrieved with citations |
-| **A body of law** — *corpus juris*; *habeas corpus* | The authorisation model: 43 permissions, 66 policy rules, and an append-only audit trail |
+| **A body of law** — *corpus juris*; *habeas corpus* | The authorisation model: 45 permissions, 71 policy rules, and an append-only audit trail |
 
 The third sense is the pointed one. *Habeas corpus* is the writ that forbids holding someone
 without an authority willing to justify it before a court. CORPUS applies the same rule to data:
@@ -126,14 +126,14 @@ corpus/
 │   │   │   ├── env.ts          Worker bindings and environment
 │   │   │   ├── middleware/     auth, body limits, errors, request context, security headers
 │   │   │   └── routes/         auth, employees, leave, recruitment, knowledge,
-│   │   │                       knowledge-answers, reports, security, assistant,
-│   │   │                       telegram, health
+│   │   │                       knowledge-answers, candidate-documents, reports,
+│   │   │                       security, assistant, telegram, health
 │   │   └── wrangler.toml       D1 / R2 / KV bindings, vars, production env
 │   │
 │   └── web/                    Next.js 14 admin dashboard
 │       ├── app/                login, dashboard, people, recruitment, leave,
-│       │                       knowledge, knowledge/training, reports, security,
-│       │                       settings, assistant
+│       │                       knowledge, knowledge/training, recruitment/cvs,
+│       │                       reports, security, settings, assistant
 │       ├── components/         shell, session, UI primitives
 │       └── lib/                API client (`NEXT_PUBLIC_API_BASE_URL`)
 │
@@ -431,10 +431,10 @@ builds for Pages with `npm run pages:build --workspace @corpus/web` and deploys 
 ## Testing
 
 ```bash
-npm test                   # all 584 tests (vitest run)
-npm run test:unit          # tests/unit        — 242 tests
+npm test                   # all 659 tests (vitest run)
+npm run test:unit          # tests/unit        — 276 tests
 npm run test:integration   # tests/integration —  76 tests
-npm run test:security      # tests/security    — 245 tests
+npm run test:security      # tests/security    — 286 tests
 npm run test:e2e           # tests/e2e         —  21 tests
 npm run test:watch         # vitest in watch mode
 
@@ -549,12 +549,18 @@ The migration path and its sequencing are described in [docs/roadmap.md](docs/ro
 - Recruitment: jobs and requirements, candidates, applications, stage transitions and application
   events, interviews and offers (both permission-gated, `interview.manage` and `offer.manage`), and
   a public job surface that can withhold a salary range per posting.
+- CVs: candidates send a PDF, DOCX, TXT or Markdown CV to the recruitment bot after applying, or HR
+  uploads one. DOCX/TXT/MD text is extracted automatically; a PDF is stored and downloadable but its
+  text must be pasted in (pdf.js cannot be bundled into workerd — see docs/rag.md §14a). Everything
+  is CONFIDENTIAL, previewable in the dashboard, and matchable against a job's structured
+  requirements — a deterministic, evidence-carrying, advisory report with no model involved.
 - Knowledge base: documents, versions with effective dates, chunks with classifications, ingestion
   through extraction and chunking, and classification-filtered search.
 - Bot training: curated question/answer pairs authored in the dashboard and served **verbatim** by
   either Telegram bot, with an audience axis (external / internal / both) on top of the usual
   classification filter, training phrasings, draft-and-publish, effective dates, a per-bot preview,
-  and a backlog of questions the bots could not answer. General staff answers can be marked as
+  a backlog of questions the bots could not answer, and Telegram commands: an answer can be bound to
+  `/command` and the bot menus pushed from the dashboard. General staff answers can be marked as
   needing no verified account, so the internal bot is useful before a Telegram id is linked while
   anything personal or credential-bearing still requires verification.
 - AI layer: provider abstraction with mock, Anthropic, OpenAI and OpenAI-compatible providers;

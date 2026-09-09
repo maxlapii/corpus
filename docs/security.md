@@ -17,15 +17,16 @@ Paths are relative to the repository root. Section references (`§n`) point at `
 9. [Bearer credentials for application references](#bearer-credentials-for-application-references)
 10. [RAG permission filtering](#rag-permission-filtering)
 11. [Curated bot answers](#curated-bot-answers)
-12. [Prompt-injection detection](#prompt-injection-detection)
-13. [Response filter](#response-filter)
-14. [Rate limiting](#rate-limiting)
-15. [Audit log and security events](#audit-log-and-security-events)
-16. [Transport and HTTP hardening](#transport-and-http-hardening)
-17. [Secrets](#secrets)
-18. [Final security review checklist (§62)](#final-security-review-checklist-62)
-19. [Security test suite](#security-test-suite)
-20. [Limitations / Roadmap](#limitations--roadmap)
+12. [Candidate CVs](#candidate-cvs)
+13. [Prompt-injection detection](#prompt-injection-detection)
+14. [Response filter](#response-filter)
+15. [Rate limiting](#rate-limiting)
+16. [Audit log and security events](#audit-log-and-security-events)
+17. [Transport and HTTP hardening](#transport-and-http-hardening)
+18. [Secrets](#secrets)
+19. [Final security review checklist (§62)](#final-security-review-checklist-62)
+20. [Security test suite](#security-test-suite)
+21. [Limitations / Roadmap](#limitations--roadmap)
 
 ---
 
@@ -427,9 +428,19 @@ The governing invariant is enforced four times, and deliberately so:
 
 Only 3 and 4 are load-bearing. `tests/security/bot-training.test.ts` inserts directly through the repository, bypassing 1–3, to prove the schema refuses the row on its own.
 
+### Bot command menus
+
+A command bound to a curated answer is two separable things, and conflating them would be the bug:
+
+- **Running** it takes the answer's *question* and runs the ordinary turn, so every filter applies. An unauthorised command is indistinguishable from an unknown one.
+- **Advertising** it in the Telegram menu is world-readable: the menu is shown to anyone who opens the bot, before any verification. Only `ACTIVE`, in-date, **PUBLIC** answers are published (`listMenuCommands`), so a CONFIDENTIAL answer's command keeps working for the authorised without its existence being announced.
+
+The menu description is authored, never derived from the question — the question can say more than a public menu should — and the schema refuses a command without one. `RESERVED_BOT_COMMANDS` stops an author taking `/verify`, `/code` or any other built-in, which would otherwise let curated text intercept the verification flow. Pushing a menu is an audited `knowledge.answer:update`, gated on `faq.manage`.
+
 Two further properties worth stating explicitly:
 
 - **The curated lookup runs before the intent zone gate**, so a candidate asking a policy-shaped question gets the answer HR published for candidates rather than a zone refusal. `RESTRICTED`-risk intents are excluded from that shortcut entirely: a salary question still reaches the gate and still leaves an audited `DENY`, whatever curated text happens to match it. Both halves are pinned by tests.
+- **A curated answer never answers a person-specific question.** Intents whose `target` is `SELF` or `OTHER_EMPLOYEE` skip the curated path: their true answer differs per asker, so approved static text can never be right for them. Found in practice — a seeded answer about leave benefits matched "what is my remaining leave balance" at exactly the coverage floor and pre-empted `get_my_leave_balance`.
 - **A match must clear a threshold** — ≥ 0.67 stem coverage of the asker's question and ≥ 2 matching stems — before approved text is reused. Below it the turn falls through to normal retrieval. Declining is safe; confidently serving the wrong approved answer is not.
 
 ### The verified-account gate
@@ -444,7 +455,33 @@ On the internal bot, an unlinked Telegram id reaches `AIOrchestrator.answerFromC
 
 Injection-shaped text inside a curated answer is logged, not stripped: there is no model turn for it to hijack, and a holder of `faq.manage` approved it. Figures inside a served answer are passed to the response filter as `groundedNumbers`, because a human approved them — otherwise the filter would redact the very numbers HR published.
 
-Proof: `tests/security/bot-training.test.ts` (40), `tests/unit/answer-flow.test.ts` (21), `tests/e2e/bot-training-flow.test.ts` (6).
+Proof: `tests/security/bot-training.test.ts` (56), `tests/unit/answer-flow.test.ts` (35), `tests/e2e/bot-training-flow.test.ts` (6).
+
+---
+
+## Candidate CVs
+
+A CV is the most personal record the system holds, about someone who does not even work here. It is **CONFIDENTIAL**, so `EMPLOYEE` and `MANAGER` cannot list, read, download or match one — only `candidate.document.read` reaches it, and that is granted to HR, HR_ADMIN and SYSTEM_ADMIN alone.
+
+| Control | Where |
+|---|---|
+| Format allow-list (PDF, DOCX, TXT, MD) and a 5 MB cap | `CvIntakeService` — one path shared by the bot and the dashboard, so the two cannot drift |
+| CONFIDENTIAL on every read | `candidate.document:*` rules; the route resolves the stored row before the gateway call |
+| Never in a chat | `maxRiskInChat: 'LOW'` on `candidate.document:read` |
+| Download hardening | `attachment` disposition with a sanitised filename, `no-store`, `nosniff` — the filename came from a candidate |
+| Tenant isolation | Every query is tenant-scoped; a cross-tenant id returns 404 |
+
+**Intake requires an identified candidate.** The external bot only attaches a CV to a candidate its Telegram id already resolves to. A file from an id that has never applied is refused outright — inventing an owner from a Telegram profile is exactly the identity guess §12 forbids. A test asserts no document row is created in that case.
+
+**A malicious CV is data.** Injection-shaped text is scanned, flagged and raises a `DOCUMENT_INJECTION` event carrying categories and a score, never the CV itself. It does **not** reject the upload: refusing it would let an attacker deny a genuine applicant by poisoning their own CV. The protection is that nothing treats the text as an instruction — the matcher only runs regular expressions over it, and the dashboard renders it inside a `<pre>` as a text node.
+
+**Matching is deterministic and advisory.** No model is involved (§38). Three properties are asserted by test rather than intended by comment:
+
+- Every match carries the CV sentence that produced it, so a person can disagree with it.
+- Nothing decides anything: no threshold rejects a candidate, and the application stage machine is untouched.
+- No protected characteristic is extracted, matched or scored — age, gender, nationality, marital status and health are ignored even when a CV volunteers them.
+
+Proof: `tests/security/candidate-cvs.test.ts` (25), `tests/unit/cv-matching.test.ts` (17).
 
 ---
 
@@ -576,7 +613,7 @@ Local results on 2026-09-07: `npx vitest run tests/security` → 3 files, 157 te
 | 11 | Tenant isolation works | Gateway step 1; `tenantScope()`; tenant column on every query | `tests/unit/policy-gateway.test.ts` "denies a cross-tenant resource even for SYSTEM_ADMIN"; acceptance Test 8; RAG test "never crosses a tenant boundary" |
 | 12 | Cross-user access is blocked | `SELF`/`TEAM` ownership; owner ids from database in `resolveResource()` | `tests/unit/policy-gateway.test.ts` "ownership"; `prompt-attacks.test.ts` "data leakage attacks"; acceptance Tests 1, 6 |
 | 13 | Prompt injection is tested | `scanForInjection()`, `wrapUntrusted()` | `tests/unit/prompt-injection.test.ts`; `tests/security/prompt-attacks.test.ts`; acceptance Test 3 |
-| 14 | Malicious documents are tested | `DocumentIngestionService` scan + framing | `tests/integration/rag-permission-filtering.test.ts` "malicious document handling"; acceptance Test 7 |
+| 14 | Malicious documents are tested | `DocumentIngestionService` scan + framing; `CvIntakeService` scan + flag on CVs | `tests/integration/rag-permission-filtering.test.ts` "malicious document handling"; acceptance Test 7; `tests/security/candidate-cvs.test.ts` "a malicious CV is data, not instruction" |
 | 15 | Sensitive actions are audited | Gateway writes ALLOW/DENY rows; `tool_calls` per tool | `tests/security/authorization-matrix.test.ts` "records a DENY audit row for every refusal"; `tests/unit/policy-gateway.test.ts` "auditing" |
 | 16 | Secrets are not exposed | `AppError.toPublicJSON()`, `redact()`, `describeConfig()` | `tests/integration/api-smoke.test.ts` "never exposes secrets through /health"; `authorization-matrix.test.ts` "never leaks SQL, stack traces or internal detail"; `tests/unit/misc-units.test.ts` "log redaction" |
 | 17 | Frontend does not contain secrets | `apps/web/lib/api.ts`, `next.config.mjs`; cookie is HttpOnly | Structural (no test); `scripts/check-secrets.ts` scans `apps/web` in CI |
@@ -584,8 +621,8 @@ Local results on 2026-09-07: `npx vitest run tests/security` → 3 files, 157 te
 | 19 | Input validation exists | `packages/shared/src/validate.ts`; `middleware/body.ts`; tool validators | `tests/unit/misc-units.test.ts` "validation"; `tests/unit/tool-registry.test.ts` "rejects invalid arguments before the handler runs"; `rate-limiting.test.ts` "rejects an oversized request body" |
 | 20 | Production state is not stored on local filesystem | D1 + R2 via `StorageService`; per-request container; memory fallbacks reported by `/health` | `tests/integration/repositories.test.ts`; `/health` `documentStorage` field |
 | 21 | Database migrations work | `migrations/*.sql`, `packages/db/src/migrations.ts` | `tests/integration/schema.test.ts` "applies all migrations exactly once", "enforces foreign keys" |
-| 22 | CI passes | `.github/workflows/ci.yml` (secret scan → lint → typecheck → unit → integration → security → e2e → RBAC drift → build) | Full suite passed locally on 2026-09-09 (584 tests). The GitHub Actions run itself must be confirmed in the repository's Actions tab. |
-| 23 | Security tests pass | `tests/security/*.test.ts` | `npm run test:security` → 245 passed (2026-09-09) |
+| 22 | CI passes | `.github/workflows/ci.yml` (secret scan → lint → typecheck → unit → integration → security → e2e → RBAC drift → build) | Full suite passed locally on 2026-09-09 (659 tests). The GitHub Actions run itself must be confirmed in the repository's Actions tab. |
+| 23 | Security tests pass | `tests/security/*.test.ts` | `npm run test:security` → 286 passed (2026-09-09) |
 
 ---
 

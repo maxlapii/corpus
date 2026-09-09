@@ -40,6 +40,7 @@ import {
   type RateLimiter,
 } from '@corpus/security'
 import {
+  CvIntakeService,
   D1AnswerSearchService,
   D1KnowledgeSearchService,
   DocumentIngestionService,
@@ -53,6 +54,7 @@ import {
   type AIProvider,
 } from '@corpus/ai'
 import {
+  CommandSyncService,
   KvReplayGuard,
   MemoryReplayGuard,
   TelegramClient,
@@ -81,6 +83,8 @@ export interface Container {
   orchestrator: AIOrchestrator
   knowledgeSearch: D1KnowledgeSearchService
   answerSearch: D1AnswerSearchService
+  cvIntake: CvIntakeService
+  commandSync: CommandSyncService
   ingestion: DocumentIngestionService
   externalBotClient: TelegramClient
   internalBotClient: TelegramClient
@@ -144,6 +148,23 @@ export function createContainer(env: WorkerEnv, requestId: string): Container {
 
   const knowledgeSearch = new D1KnowledgeSearchService({ knowledge: repos.knowledge, logger })
   const answerSearch = new D1AnswerSearchService({ answers: repos.knowledgeAnswers, logger })
+  // Hoisted so the command-sync service and the returned container share one
+  // client per bot rather than each making its own.
+  const externalBotClient = new TelegramClient(config.telegram.externalBotToken, { logger })
+  const internalBotClient = new TelegramClient(config.telegram.internalBotToken, { logger })
+
+  const commandSync = new CommandSyncService({
+    answers: repos.knowledgeAnswers,
+    externalBot: externalBotClient,
+    internalBot: internalBotClient,
+    logger,
+  })
+  const cvIntake = new CvIntakeService({
+    documents: repos.candidateDocuments,
+    storage,
+    securityEvents,
+    logger,
+  })
   const ingestion = new DocumentIngestionService({
     knowledge: repos.knowledge,
     storage,
@@ -199,9 +220,11 @@ export function createContainer(env: WorkerEnv, requestId: string): Container {
     orchestrator,
     knowledgeSearch,
     answerSearch,
+    cvIntake,
+    commandSync,
     ingestion,
-    externalBotClient: new TelegramClient(config.telegram.externalBotToken, { logger }),
-    internalBotClient: new TelegramClient(config.telegram.internalBotToken, { logger }),
+    externalBotClient,
+    internalBotClient,
     today: todayUtc(),
     configProblems,
   }

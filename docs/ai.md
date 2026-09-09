@@ -329,7 +329,9 @@ sequences, budgets and frames; it holds no authority of its own.
    ▼
  4. Classify            IntentClassifier.classify(message, identity.zone)
    ▼
- 5. Curated answer      skipped entirely when risk === 'RESTRICTED'
+ 5. Curated answer      skipped when risk === 'RESTRICTED', and when the intent is
+   │                    person-specific (target SELF / OTHER_EMPLOYEE) — "my leave
+   │                    balance" must come from the database, not approved prose (§38)
    │                    PolicyGateway.authorize(knowledge.answer:search)
    │                       → classification ceiling
    │                    compartment ← channel (not zone); verifiedAccount ← identity.kind

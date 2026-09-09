@@ -15,6 +15,7 @@ It is written against the source. Where `CLAUDE.md` asks for something the code 
 7. [Rate limits](#7-rate-limits)
 8. [Update normalisation and what is not trusted](#8-update-normalisation-and-what-is-not-trusted)
 9. [External bot](#9-external-bot)
+9a. [CV uploads on the external bot](#9a-cv-uploads-on-the-external-bot)
 10. [Internal bot](#10-internal-bot)
 10a. [Curated answers (bot training)](#10a-curated-answers-bot-training)
 11. [Identity verification flow](#11-identity-verification-flow)
@@ -320,6 +321,46 @@ Each turn is logged with `action: 'telegram.external'`, the intent, and `name:de
 
 ---
 
+## 9a. CV uploads on the external bot
+
+A candidate can send their CV as a Telegram document. The bot handles a file before any model call —
+a file is not a question.
+
+```text
+document message
+      ↓
+ candidate resolved from telegram_user_id ? ──no──→ "apply first so I know who this belongs to"
+      │ yes
+      ↓
+ format allow-list (PDF / DOCX / TXT / MD) and 5 MB cap  ← checked BEFORE any download
+      ↓
+ upload rate limit  (tg:cv:<id>, the application budget)
+      ↓
+ client.downloadFile()  → getFile, then the file endpoint
+      ↓
+ CvIntakeService: store original → extract text → scan for injection → row
+      ↓
+ "I have attached <filename> to your application."
+```
+
+Points that matter:
+
+- **The candidate must already be identified.** The CV attaches to the candidate the Telegram id
+  already resolves to, which exists only because they applied and gave a real name and e-mail.
+  A file from an unknown id is refused rather than owned by a guess (§12).
+- **The download URL embeds the bot token**, so it is never logged, returned or put in an error
+  message — only the byte count is.
+- **Format and size are checked before downloading**, so a hostile 20 MB file costs no transfer.
+- **A separate, tighter rate limit** than ordinary messages: a download costs far more than a reply.
+- **Extraction failure is not the candidate's problem.** A scanned PDF with no text layer is still a
+  received CV; it is stored, the original stays downloadable, and HR can paste the text in the
+  dashboard so it can be matched.
+
+Where it goes next: **Recruitment → CVs** in the dashboard. See `docs/database.md` §3.9 for the
+schema and `docs/security.md`, "Candidate CVs", for the access rules.
+
+---
+
 ## 10. Internal bot
 
 `packages/telegram/src/internal-bot.ts`. Verified employees only (§32). An unlinked Telegram id can do exactly one thing: start the verification flow.
@@ -398,6 +439,15 @@ Behaviour worth knowing when reasoning about a reply:
   approved text.
 - Adding **training phrasings** to an answer is what widens the ways the bot recognises it. A
   phrasing that is not listed is a phrasing the bot will not match.
+- **A command can be bound to an answer.** `/benefits` runs the same turn as asking the question, so
+  audience, classification and the account gate all still apply — an unauthorised command behaves
+  exactly like an unknown one. **Knowledge → Bot training → Telegram command menus** shows what each
+  bot would publish and pushes it with `setMyCommands`. Only `ACTIVE`, in-date, **PUBLIC** answers
+  are listed, because Telegram shows the menu to anyone who opens the bot before they verify; a
+  command on a more sensitive answer still works, it is just not advertised. Built-ins are always
+  sent alongside curated commands, since `setMyCommands` replaces the whole list.
+- **A curated answer never answers a person-specific question.** Intents whose `target` is `SELF` or
+  `OTHER_EMPLOYEE` skip the curated path entirely: "my leave balance" comes from the database (§38).
 - Salary-shaped questions are never answered this way. `RESTRICTED`-risk intents skip the curated
   path and go to the PolicyGateway, which refuses and writes an audited `DENY`.
 - **An unlinked Telegram id can get general answers without verifying.** Not every internal question

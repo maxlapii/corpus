@@ -11,7 +11,11 @@ import {
   audienceReachesExternalZone,
   buildAnswerSearchText,
   canTransitionAnswer,
+  RESERVED_BOT_COMMANDS,
+  commandReachesCompartment,
+  isAdvertisableCommand,
   isAnswerAudience,
+  normaliseCommand,
   resolveRequiresAccount,
   validateAnswerDraft,
   type AnswerAudience,
@@ -115,6 +119,89 @@ describe('the verified-account gate', () => {
     for (const classification of ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'] as const) {
       expect(validateAnswerDraft({ ...base, requiresAccount: true, classification })).toEqual([])
     }
+  })
+})
+
+describe('bot commands on an answer', () => {
+  const withCommand = (command: string, description = 'A short menu line') => ({
+    ...base,
+    command,
+    commandDescription: description,
+  })
+
+  it('accepts a well-formed command with a description', () => {
+    expect(validateAnswerDraft(withCommand('benefits'))).toEqual([])
+    expect(validateAnswerDraft(withCommand('/benefits'))).toEqual([])
+    expect(validateAnswerDraft(withCommand('parental_leave_2026'))).toEqual([])
+  })
+
+  it('rejects a command Telegram would not accept', () => {
+    for (const bad of ['My Command', 'benefits!', 'café', 'a'.repeat(33), '-x']) {
+      expect(codesOf(validateAnswerDraft(withCommand(bad))), bad).toContain('INVALID')
+    }
+  })
+
+  it('refuses to shadow a built-in command', () => {
+    for (const reserved of RESERVED_BOT_COMMANDS) {
+      expect(codesOf(validateAnswerDraft(withCommand(reserved))), reserved).toContain('RESERVED')
+    }
+  })
+
+  it('requires a menu description, because the menu is world-readable', () => {
+    expect(codesOf(validateAnswerDraft({ ...base, command: 'benefits' }))).toContain('REQUIRED')
+    expect(codesOf(validateAnswerDraft(withCommand('benefits', 'x')))).toContain('REQUIRED')
+    expect(codesOf(validateAnswerDraft(withCommand('benefits', 'y'.repeat(257))))).toContain('TOO_LONG')
+  })
+
+  it('leaves an answer without a command alone', () => {
+    expect(validateAnswerDraft({ ...base, command: null })).toEqual([])
+    expect(validateAnswerDraft({ ...base, command: '' })).toEqual([])
+  })
+
+  it('normalises the leading slash and casing', () => {
+    expect(normaliseCommand('/Benefits')).toBe('benefits')
+    expect(normaliseCommand('  BENEFITS  ')).toBe('benefits')
+  })
+})
+
+describe('what may be advertised in a bot menu', () => {
+  const advertisable = {
+    command: 'benefits',
+    commandDescription: 'What we offer',
+    audience: 'BOTH' as AnswerAudience,
+    classification: 'PUBLIC' as Classification,
+    status: 'ACTIVE' as const,
+  }
+
+  it('advertises an ACTIVE PUBLIC command', () => {
+    expect(isAdvertisableCommand(advertisable)).toBe(true)
+  })
+
+  it.each(['INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'] as const)(
+    'never advertises a %s answer, even though its command still works',
+    (classification) => {
+      // The menu is visible before anyone verifies, so listing a sensitive
+      // command would leak that it exists.
+      expect(isAdvertisableCommand({ ...advertisable, classification })).toBe(false)
+    },
+  )
+
+  it.each(['DRAFT', 'ARCHIVED'] as const)('never advertises a %s answer', (status) => {
+    expect(isAdvertisableCommand({ ...advertisable, status })).toBe(false)
+  })
+
+  it('needs both a command and a description', () => {
+    expect(isAdvertisableCommand({ ...advertisable, command: null })).toBe(false)
+    expect(isAdvertisableCommand({ ...advertisable, commandDescription: null })).toBe(false)
+  })
+
+  it('routes each audience to the right bot menu', () => {
+    expect(commandReachesCompartment('EXTERNAL', 'EXTERNAL')).toBe(true)
+    expect(commandReachesCompartment('EXTERNAL', 'INTERNAL')).toBe(false)
+    expect(commandReachesCompartment('INTERNAL', 'INTERNAL')).toBe(true)
+    expect(commandReachesCompartment('INTERNAL', 'EXTERNAL')).toBe(false)
+    expect(commandReachesCompartment('BOTH', 'EXTERNAL')).toBe(true)
+    expect(commandReachesCompartment('BOTH', 'INTERNAL')).toBe(true)
   })
 })
 

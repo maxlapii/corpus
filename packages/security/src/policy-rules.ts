@@ -281,6 +281,32 @@ export const POLICY_RULES: Readonly<Record<RuleKey, PolicyRule>> = {
     maxRiskInChat: 'LOW',
   },
 
+  // --- Candidate documents (CVs)
+  // CONFIDENTIAL by construction: a CV is the most personal thing a candidate
+  // hands over, so the ceiling is set high enough to read it and no higher.
+  'candidate.document:list': {
+    zones: INTERNAL_ONLY,
+    grants: [{ permission: 'candidate.document.read', ownership: 'ANY', maxClassification: 'CONFIDENTIAL' }],
+  },
+  'candidate.document:read': {
+    zones: INTERNAL_ONLY,
+    grants: [{ permission: 'candidate.document.read', ownership: 'ANY', maxClassification: 'CONFIDENTIAL' }],
+    // Never rendered into a chat: a CV is bulk personal data (§8).
+    maxRiskInChat: 'LOW',
+  },
+  'candidate.document:create': {
+    zones: INTERNAL_ONLY,
+    grants: [{ permission: 'candidate.document.manage', ownership: 'ANY', maxClassification: 'CONFIDENTIAL' }],
+  },
+  'candidate.document:update': {
+    zones: INTERNAL_ONLY,
+    grants: [{ permission: 'candidate.document.manage', ownership: 'ANY', maxClassification: 'CONFIDENTIAL' }],
+  },
+  'candidate.document:delete': {
+    zones: INTERNAL_ONLY,
+    grants: [{ permission: 'candidate.document.manage', ownership: 'ANY', maxClassification: 'CONFIDENTIAL' }],
+  },
+
   // --- Knowledge
   // The classification ceiling per grant is what implements §9 enforcement.
   'knowledge.document:read': {

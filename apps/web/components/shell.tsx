@@ -26,6 +26,7 @@ const NAV: NavItem[] = [
   { href: '/', label: 'Dashboard', anyOf: [] },
   { href: '/people', label: 'People', anyOf: ['employee.read.team', 'employee.read.all'] },
   { href: '/recruitment', label: 'Recruitment', anyOf: ['job.read.internal'] },
+  { href: '/recruitment/cvs', label: 'CVs', anyOf: ['candidate.document.read'] },
   { href: '/leave', label: 'Leave', anyOf: [] },
   { href: '/knowledge', label: 'Knowledge', anyOf: ['policy.read'] },
   { href: '/knowledge/training', label: 'Bot training', anyOf: ['faq.manage'] },

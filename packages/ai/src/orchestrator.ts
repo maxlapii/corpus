@@ -188,9 +188,14 @@ export class AIOrchestrator {
     // This runs *before* the intent gate below, because an approved PUBLIC
     // answer is not internal data — a candidate asking a policy-shaped question
     // should get the answer HR published for them rather than a zone refusal.
-    // RESTRICTED-risk intents are excluded: those must reach the gate and leave
-    // an audited DENY, which is the whole reason the gate exists.
-    if (definition.risk !== 'RESTRICTED') {
+    //
+    // Two kinds of intent are excluded. RESTRICTED-risk ones must reach the
+    // gate and leave an audited DENY, which is the whole reason the gate
+    // exists. Person-specific ones must come from the database (§38): "what is
+    // my leave balance" has a different true answer for every asker, and a
+    // broadly-worded curated answer must never be able to pre-empt the tool
+    // that actually knows it.
+    if (definition.risk !== 'RESTRICTED' && !isPersonSpecific(definition.target)) {
       const curated = await this.curatedAnswerFor(identity, message, today, request.requestId)
       if (curated) {
         const filtered = filterAiResponse(curated.answer, {
@@ -679,6 +684,14 @@ function addUsage(
   b: { inputTokens: number; outputTokens: number },
 ): { inputTokens: number; outputTokens: number } {
   return { inputTokens: a.inputTokens + b.inputTokens, outputTokens: a.outputTokens + b.outputTokens }
+}
+
+/**
+ * Whether the answer depends on who is asking. Approved static text can never
+ * be right for these, however well it matches the words.
+ */
+function isPersonSpecific(target: (typeof INTENT_DEFINITIONS)[Intent]['target']): boolean {
+  return target === 'SELF' || target === 'OTHER_EMPLOYEE'
 }
 
 /**

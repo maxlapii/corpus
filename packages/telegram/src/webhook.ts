@@ -6,8 +6,8 @@
  * link exists in the database.
  */
 
-import { timingSafeEqual } from '@corpus/shared'
-import type { NormalisedUpdate, TelegramUpdate } from './types.js'
+import { stripControlCharacters, timingSafeEqual } from '@corpus/shared'
+import type { NormalisedUpdate, TelegramMessage, TelegramUpdate } from './types.js'
 
 export const WEBHOOK_SECRET_HEADER = 'x-telegram-bot-api-secret-token'
 
@@ -43,8 +43,13 @@ export function normaliseUpdate(raw: unknown): NormalisedUpdate | null {
   // Ignore other bots entirely.
   if (isBot) return null
 
-  const text = (message?.text ?? callback?.data ?? '').slice(0, MAX_TEXT_CHARS).trim()
-  if (text.length === 0) return null
+  const text = (message?.text ?? message?.caption ?? callback?.data ?? '')
+    .slice(0, MAX_TEXT_CHARS)
+    .trim()
+  const document = normaliseDocument(message?.document)
+
+  // A file with no caption is a real message; only a genuinely empty one is not.
+  if (text.length === 0 && !document) return null
 
   const commandMatch = /^\/([A-Za-z0-9_]{1,32})(?:@[A-Za-z0-9_]+)?\s*([\s\S]*)$/.exec(text)
 
@@ -58,6 +63,28 @@ export function normaliseUpdate(raw: unknown): NormalisedUpdate | null {
     commandArgs: commandMatch ? (commandMatch[2] ?? '').trim() : '',
     displayName: [from.first_name, from.last_name].filter(Boolean).join(' ') || from.username || 'Unknown',
     isBot,
+    document,
+  }
+}
+
+const MAX_FILENAME_CHARS = 200
+
+/**
+ * Everything here is attacker-controlled: the filename becomes a storage key
+ * and a Content-Disposition value later, so path separators and control
+ * characters are stripped at the boundary rather than downstream.
+ */
+function normaliseDocument(raw: TelegramMessage['document']): NormalisedUpdate['document'] {
+  if (!raw || typeof raw.file_id !== 'string' || raw.file_id.length === 0) return null
+  const fileName = stripControlCharacters(String(raw.file_name ?? 'upload'))
+    .replace(/[/\\]/g, '_')
+    .trim()
+    .slice(0, MAX_FILENAME_CHARS)
+  return {
+    fileId: raw.file_id,
+    fileName: fileName.length > 0 ? fileName : 'upload',
+    mimeType: String(raw.mime_type ?? '').slice(0, 120),
+    fileSize: Number.isFinite(raw.file_size) ? Number(raw.file_size) : 0,
   }
 }
 

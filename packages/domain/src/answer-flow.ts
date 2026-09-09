@@ -47,6 +47,10 @@ export interface AnswerDraft {
    * Only PUBLIC text may drop the requirement.
    */
   requiresAccount?: boolean
+  /** Binds the answer to `/command`. Without the leading slash. */
+  command?: string | null
+  /** Menu text. World-readable, so it is authored, not derived. */
+  commandDescription?: string | null
   phrases?: readonly string[]
   effectiveFrom: string
   effectiveTo?: string | null
@@ -62,6 +66,27 @@ export function resolveRequiresAccount(
 ): boolean {
   if (audienceReachesExternalZone(audience)) return false
   return requested ?? true
+}
+
+/**
+ * Commands the bots implement themselves. A curated answer may not take one:
+ * shadowing `/verify` would let an author intercept the verification flow.
+ */
+export const RESERVED_BOT_COMMANDS: readonly string[] = [
+  'start', 'help', 'cancel', 'settings',
+  // external
+  'jobs', 'apply', 'status',
+  // internal
+  'verify', 'code', 'balance', 'leave', 'request', 'holidays', 'policy', 'approvals',
+]
+
+/** Telegram's own rule: 1–32 of a–z, 0–9 and underscore. */
+const COMMAND_PATTERN = /^[a-z0-9_]{1,32}$/
+/** Telegram caps a command description at 256 characters. */
+export const MAX_COMMAND_DESCRIPTION = 256
+
+export function normaliseCommand(raw: string): string {
+  return raw.trim().replace(/^\//, '').toLowerCase()
 }
 
 export const MAX_TRAINING_PHRASES = 20
@@ -116,6 +141,39 @@ export function validateAnswerDraft(draft: AnswerDraft): AnswerValidationIssue[]
     })
   }
 
+  const command = draft.command ? normaliseCommand(draft.command) : ''
+  if (command.length > 0) {
+    if (!COMMAND_PATTERN.test(command)) {
+      issues.push({
+        field: 'command',
+        code: 'INVALID',
+        message: 'A command may only use lower-case letters, digits and underscores (max 32).',
+      })
+    }
+    if (RESERVED_BOT_COMMANDS.includes(command)) {
+      issues.push({
+        field: 'command',
+        code: 'RESERVED',
+        message: `/${command} is a built-in bot command and cannot be reused.`,
+      })
+    }
+    const description = (draft.commandDescription ?? '').trim()
+    if (description.length < 3) {
+      issues.push({
+        field: 'commandDescription',
+        code: 'REQUIRED',
+        message: 'A command needs a short menu description, shown to everyone who opens the bot.',
+      })
+    }
+    if (description.length > MAX_COMMAND_DESCRIPTION) {
+      issues.push({
+        field: 'commandDescription',
+        code: 'TOO_LONG',
+        message: `The menu description must be at most ${MAX_COMMAND_DESCRIPTION} characters.`,
+      })
+    }
+  }
+
   const phrases = draft.phrases ?? []
   if (phrases.length > MAX_TRAINING_PHRASES) {
     issues.push({
@@ -160,6 +218,37 @@ export function canTransitionAnswer(from: AnswerStatus, to: AnswerStatus): boole
  */
 export function buildAnswerSearchText(question: string, phrases: readonly string[]): string {
   return [question, ...phrases].map((s) => s.trim()).filter(Boolean).join('\n')
+}
+
+export interface AdvertisableAnswer {
+  command: string | null
+  commandDescription: string | null
+  audience: AnswerAudience
+  classification: Classification
+  status: AnswerStatus
+}
+
+/**
+ * Whether a command may be published to a bot's command menu.
+ *
+ * Telegram shows that menu to anyone who opens the bot, before any
+ * verification, so the menu is a PUBLIC surface whatever the bot. An answer
+ * above PUBLIC keeps its command — running it still goes through the gateway —
+ * but its existence is not advertised.
+ */
+export function isAdvertisableCommand(answer: AdvertisableAnswer): boolean {
+  if (!answer.command || !answer.commandDescription) return false
+  if (answer.status !== 'ACTIVE') return false
+  return answer.classification === 'PUBLIC'
+}
+
+/** Which bot menu an advertisable answer belongs in. */
+export function commandReachesCompartment(
+  audience: AnswerAudience,
+  compartment: 'EXTERNAL' | 'INTERNAL',
+): boolean {
+  if (audience === 'BOTH') return true
+  return compartment === 'EXTERNAL' ? audience === 'EXTERNAL' : audience === 'INTERNAL'
 }
 
 function isDateOnly(v: string): boolean {

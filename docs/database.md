@@ -62,7 +62,7 @@ depend on.
 
 ## 2. Migrations at a glance
 
-Nine forward-only SQL files, applied in filename order. There are no down-migrations.
+Twelve forward-only SQL files, applied in filename order. There are no down-migrations.
 
 | File | Purpose | Tables created |
 | --- | --- | --- |
@@ -75,6 +75,9 @@ Nine forward-only SQL files, applied in filename order. There are no down-migrat
 | `migrations/0007_knowledge_answers.sql` | Curated bot answers, training phrasings, FTS5 index + 3 triggers | 3 (one virtual) |
 | `migrations/0008_rbac_reference.sql` | **Generated** reference data, reissued for the `faq.*` permissions | 0 (data only) |
 | `migrations/0009_answer_account_gate.sql` | `requires_account` on curated answers, plus two guard triggers | 0 (column + triggers) |
+| `migrations/0010_candidate_documents.sql` | Candidate CVs: file metadata, extracted text, extraction status | 1 |
+| `migrations/0011_rbac_reference.sql` | **Generated** reference data, reissued for the `candidate.document.*` permissions | 0 (data only) |
+| `migrations/0012_answer_commands.sql` | `command` / `command_description` on curated answers, plus two guard triggers | 0 (columns + triggers) |
 
 `tests/integration/schema.test.ts` asserts that all six apply cleanly to a real SQLite
 engine, that re-running is a no-op, and that every one of the 39 tables exists.
@@ -171,9 +174,9 @@ copy in step: changing a document's classification issues a matching
 | `rate_limit_counters` | Durable limiter fallback | See [§12](#12-rate-limit-counters) |
 | `retention_policies` | Retention bookkeeping | Seeded with six rows; see [§13](#13-retention-policies-and-pruning) |
 
-### 3.6 `0006_rbac_reference.sql` / `0008_rbac_reference.sql` — generated reference data
+### 3.6 `0006` / `0008` / `0011_rbac_reference.sql` — generated reference data
 
-Data only: 5 roles, 43 permissions and the full role→permission grant matrix, written by
+Data only: 5 roles, 45 permissions and the full role→permission grant matrix, written by
 `scripts/generate-rbac-migration.ts` from `packages/domain/src/roles.ts`. `SYSTEM_ADMIN` is
 fully enumerated rather than wildcarded, "so every grant stays visible in the audit trail".
 Drift between code and migration is a test failure — see
@@ -184,7 +187,7 @@ rewriting the previous one. A migration runner records what it has applied by fi
 an applied file would silently leave every existing database on the old grants. Each generated file
 replaces the reference tables wholesale (`INSERT OR REPLACE` for roles and permissions, `DELETE`
 then `INSERT` for grants), so a fresh database and an upgraded one converge on identical rows.
-`0008` is the current one; bump `TARGET` in the generator for the next change.
+`0011` is the current one; bump `TARGET` in the generator for the next change.
 
 ### 3.7 `0007_knowledge_answers.sql` — curated bot answers
 
@@ -211,6 +214,32 @@ way a person might ask. The repository rebuilds it on any phrase change.
 
 The migration also adds `resolved_answer_id` and `resolved_by_user_id` to `unanswered_questions`,
 linking a gap the bot had to the curated answer that now covers it.
+
+### 3.10 `0012_answer_commands.sql` — bot commands
+
+Adds `command` and `command_description` to `knowledge_answers`, a partial unique index so one
+command cannot mean two things, and two `BEFORE` triggers refusing a command with no menu
+description — a bare slash word in a public menu helps nobody.
+
+Only PUBLIC answers are ever published to a bot menu; see `docs/security.md`, "Bot command menus".
+
+### 3.9 `0010_candidate_documents.sql` — candidate CVs
+
+| Column group | Purpose |
+|---|---|
+| `filename`, `content_type`, `byte_size`, `checksum`, `storage_key` | What arrived and where the original lives (R2 in production, never a local path — §4) |
+| `extracted_text`, `extraction_status`, `extractor`, `extraction_warnings` | The parsed text and how well that went. `OK` / `EMPTY` (a scan with no text layer) / `UNSUPPORTED` / `FAILED` |
+| `injection_flagged` | Recorded, never acted on — see below |
+| `source`, `uploaded_at`, `uploaded_by_user_id` | `TELEGRAM_EXTERNAL` when the candidate sent it, `DASHBOARD` when HR did; the user id is null for the former |
+
+A CV is **CONFIDENTIAL** and every read goes through `candidate.document:read`. The extracted text
+is stored so HR can read and match against it without pulling the original from object storage on
+every request; it is untrusted data, rendered as text and never interpreted.
+
+`injection_flagged` marks a CV whose text contains instruction-shaped content. It does **not**
+reject the upload: refusing it would let an attacker deny a genuine applicant by pasting "ignore
+previous instructions" into their own CV. The protection is that nothing ever treats the text as an
+instruction.
 
 ### 3.8 `0009_answer_account_gate.sql` — the verified-account gate
 

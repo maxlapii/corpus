@@ -14,7 +14,7 @@
  */
 
 import { prefixedId, safeParse, email as emailValidator, type Logger } from '@corpus/shared'
-import type { Repositories } from '@corpus/db'
+import { tenantScope, type Repositories } from '@corpus/db'
 import type { IdentityResolver, TelegramIdentityService } from '@corpus/auth'
 import type { AIOrchestrator } from '@corpus/ai'
 import type { RateLimiter, RateLimitRule, SecurityEventService } from '@corpus/security'
@@ -221,7 +221,7 @@ export class InternalBot {
       return
     }
 
-    const message = commandToNaturalLanguage(update)
+    const message = (await this.curatedQuestionFor(update)) ?? commandToNaturalLanguage(update)
     await this.deps.client.sendChatAction(update.chatId)
 
     const reply = await this.deps.orchestrator.handle({
@@ -273,7 +273,7 @@ export class InternalBot {
 
     const curated = await this.deps.orchestrator.answerFromCuratedOnly({
       identity,
-      message: commandToNaturalLanguage(update),
+      message: (await this.curatedQuestionFor(update)) ?? commandToNaturalLanguage(update),
       requestId,
     })
     if (!curated) return null
@@ -285,6 +285,24 @@ export class InternalBot {
       requestId,
     })
     return curated.text
+  }
+
+  /**
+   * The canonical question behind `/command`, when an author bound one.
+   *
+   * The question is returned, not the answer: the turn continues down the
+   * ordinary retrieval path, so classification and the verified-account gate
+   * still decide whether anything is served. An unverified user running a
+   * command bound to a gated answer therefore gets the verification prompt,
+   * not the text.
+   */
+  private async curatedQuestionFor(update: NormalisedUpdate): Promise<string | null> {
+    if (!update.command) return null
+    const answer = await this.deps.repos.knowledgeAnswers.findByCommand(
+      tenantScope(this.deps.tenantId),
+      update.command,
+    )
+    return answer ? answer.question : null
   }
 
   private async handleVerifyRequest(update: NormalisedUpdate, requestId: string): Promise<void> {

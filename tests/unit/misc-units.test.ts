@@ -3,6 +3,9 @@
  * state machines and rate limiting.
  */
 
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   addDays,
@@ -38,6 +41,13 @@ import {
 import { checkPasswordPolicy, hashPassword, needsRehash, verifyPassword } from '@corpus/auth'
 import { MemoryRateLimiter } from '@corpus/security'
 import { chunkDocument, estimateTokens, extractText, UnsupportedDocumentError } from '@corpus/knowledge'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+
+/** Node returns a Buffer view; the extractor takes a standalone ArrayBuffer. */
+function toArrayBuffer(buffer: Buffer): ArrayBuffer {
+  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer
+}
 
 describe('validation', () => {
   it('parses a valid object and normalises strings', () => {
@@ -344,9 +354,38 @@ describe('extraction', () => {
   })
 
   it('refuses formats it cannot index rather than storing garbage', async () => {
-    await expect(extractText(encode('%PDF-1.7'), 'application/pdf', 'x.pdf')).rejects.toThrow(
+    await expect(extractText(encode('binary'), 'image/png', 'scan.png')).rejects.toThrow(
       UnsupportedDocumentError,
     )
+  })
+
+  it('accepts a PDF but does not pretend to have read it', async () => {
+    // pdf.js cannot be bundled into workerd (see extraction.ts), so a PDF is
+    // stored and stays downloadable while its text is entered by hand. This
+    // test exists so nobody re-adds a parser without also proving it runs in
+    // the Worker, not just under Node.
+    const bytes = readFileSync(join(__dirname, '../fixtures/sample-cv.pdf'))
+    const result = await extractText(toArrayBuffer(bytes), 'application/pdf', 'cv.pdf')
+    expect(result.text).toBe('')
+    expect(result.warnings.join(' ')).toMatch(/paste the text/i)
+  })
+
+  it('reads text out of a DOCX by unzipping word/document.xml', async () => {
+    const bytes = readFileSync(join(__dirname, '../fixtures/sample-cv.docx'))
+    const result = await extractText(
+      toArrayBuffer(bytes),
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'cv.docx',
+    )
+    expect(result.extractor).toBe('docx')
+    expect(result.text).toContain('Marcus Chen')
+    expect(result.text).toContain('React')
+  })
+
+  it('never throws on a damaged PDF', async () => {
+    const result = await extractText(encode('%PDF-1.7 not really a pdf'), 'application/pdf', 'x.pdf')
+    expect(result.text).toBe('')
+    expect(result.warnings.length).toBeGreaterThan(0)
   })
 })
 

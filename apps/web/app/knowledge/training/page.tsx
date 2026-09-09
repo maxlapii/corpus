@@ -33,6 +33,8 @@ interface CuratedAnswer {
   classification: Classification
   status: Status
   requiresAccount: boolean
+  command: string | null
+  commandDescription: string | null
   effectiveFrom: string
   effectiveTo: string | null
   phrases: string[]
@@ -58,6 +60,32 @@ interface PreviewMatch {
   termMatches: number
   requiresAccount: boolean
   wouldServe: boolean
+}
+
+interface BotCommand {
+  command: string
+  description: string
+}
+
+interface CommandMenu {
+  compartment: 'EXTERNAL' | 'INTERNAL'
+  builtIn: BotCommand[]
+  curated: BotCommand[]
+  effective: BotCommand[]
+  omitted: BotCommand[]
+}
+
+interface CommandMenusResponse {
+  menus: CommandMenu[]
+  note: string
+}
+
+interface SyncResult {
+  compartment: 'EXTERNAL' | 'INTERNAL'
+  configured: boolean
+  synced: boolean
+  commands: BotCommand[]
+  omitted: BotCommand[]
 }
 
 interface PreviewResponse {
@@ -87,6 +115,8 @@ const emptyDraft = (): DraftState => ({
   classification: 'INTERNAL',
   status: 'DRAFT',
   requiresAccount: true,
+  command: '',
+  commandDescription: '',
   phrases: '',
   effectiveFrom: '',
   effectiveTo: '',
@@ -102,6 +132,8 @@ interface DraftState {
   classification: Classification
   status: Status
   requiresAccount: boolean
+  command: string
+  commandDescription: string
   /** One phrasing per line — the plainest editor for a short list. */
   phrases: string
   effectiveFrom: string
@@ -167,6 +199,7 @@ export default function TrainingPage() {
   const [notice, setNotice] = useState<string | null>(null)
   /** Set when the last save produced something the bots will not serve yet. */
   const [unpublished, setUnpublished] = useState<CuratedAnswer | null>(null)
+  const setActionErrorFromSync = setSubmitError
 
   const reloadAll = useCallback(() => {
     answers.reload()
@@ -189,6 +222,8 @@ export default function TrainingPage() {
       classification: answer.classification,
       status: answer.status,
       requiresAccount: answer.requiresAccount,
+      command: answer.command ?? '',
+      commandDescription: answer.commandDescription ?? '',
       phrases: answer.phrases.join('\n'),
       effectiveFrom: answer.effectiveFrom,
       effectiveTo: answer.effectiveTo ?? '',
@@ -233,6 +268,12 @@ export default function TrainingPage() {
       status: draft.status,
       requiresAccount: draft.requiresAccount,
       phrases: phraseLines(draft.phrases).slice(0, MAX_PHRASES),
+    }
+    if (draft.command.trim()) {
+      body.command = draft.command.trim().replace(/^\//, '')
+      body.commandDescription = draft.commandDescription.trim()
+    } else {
+      body.command = ''
     }
     if (draft.effectiveFrom) body.effectiveFrom = draft.effectiveFrom
     if (draft.effectiveTo) body.effectiveTo = draft.effectiveTo
@@ -357,6 +398,8 @@ export default function TrainingPage() {
         />
         <PreviewPanel />
       </div>
+
+      <CommandMenuCard onError={setActionErrorFromSync} onNotice={setNotice} />
 
       <Card title="Training backlog">
         <p className="hint" style={{ marginTop: 0 }}>
@@ -483,6 +526,7 @@ export default function TrainingPage() {
                     <th>Classification</th>
                     <th>Account</th>
                     <th>Status</th>
+                    <th>Command</th>
                     <th>Phrasings</th>
                     <th>Updated</th>
                     <th />
@@ -503,6 +547,18 @@ export default function TrainingPage() {
                       </td>
                       <td style={cellStyle}>
                         <Badge value={answer.status} />
+                      </td>
+                      <td style={cellStyle}>
+                        {answer.command ? (
+                          <>
+                            <span className="mono">/{answer.command}</span>
+                            {answer.classification !== 'PUBLIC' ? (
+                              <div className="hint">not listed</div>
+                            ) : null}
+                          </>
+                        ) : (
+                          <span className="hint">—</span>
+                        )}
                       </td>
                       <td style={cellStyle}>{answer.phrases.length}</td>
                       <td style={cellStyle}>{formatDateTime(answer.updatedAt)}</td>
@@ -710,6 +766,38 @@ function AnswerForm({
 
         <div className="form-row">
           <div className="field">
+            <label htmlFor="answer-command">Telegram command (optional)</label>
+            <input
+              id="answer-command"
+              value={draft.command}
+              placeholder="benefits"
+              maxLength={33}
+              onChange={(e) => setDraft({ ...draft, command: e.target.value })}
+            />
+            <div className="hint">
+              Lower-case letters, digits and underscores. Running it goes through the same checks as
+              asking the question.
+            </div>
+          </div>
+          <div className="field">
+            <label htmlFor="answer-command-description">Menu description</label>
+            <input
+              id="answer-command-description"
+              value={draft.commandDescription}
+              maxLength={256}
+              disabled={!draft.command.trim()}
+              onChange={(e) => setDraft({ ...draft, commandDescription: e.target.value })}
+            />
+            <div className="hint">
+              {draft.classification === 'PUBLIC'
+                ? 'Shown in the bot menu to anyone who opens it, before they verify. Keep it plain.'
+                : 'This answer is not PUBLIC, so the command works but is never listed in the menu.'}
+            </div>
+          </div>
+        </div>
+
+        <div className="form-row">
+          <div className="field">
             <label htmlFor="answer-from">Effective from</label>
             <input
               id="answer-from"
@@ -757,6 +845,111 @@ function AnswerForm({
           ) : null}
         </div>
       </form>
+    </Card>
+  )
+}
+
+/**
+ * The Telegram command menus, and the button that pushes them.
+ *
+ * Kept visibly separate from saving an answer: publishing a menu changes what
+ * everyone who opens the bot can see, so it is a deliberate second action
+ * rather than a side effect of editing.
+ */
+function CommandMenuCard({
+  onError,
+  onNotice,
+}: {
+  onError(error: unknown): void
+  onNotice(message: string): void
+}) {
+  const menus = useApi<CommandMenusResponse>('/knowledge/answers/commands')
+  const [syncing, setSyncing] = useState(false)
+  const [results, setResults] = useState<SyncResult[] | null>(null)
+
+  async function sync() {
+    setSyncing(true)
+    setResults(null)
+    try {
+      const response = await api<{ results: SyncResult[] }>('/knowledge/answers/commands/sync', {
+        method: 'POST',
+        body: {},
+      })
+      setResults(response.results)
+      const pushed = response.results.filter((r) => r.synced).length
+      onNotice(
+        pushed > 0
+          ? `Command menu pushed to ${pushed} bot(s).`
+          : 'Nothing was pushed — no bot token is configured.',
+      )
+      menus.reload()
+    } catch (e) {
+      onError(e)
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  return (
+    <Card title="Telegram command menus">
+      {menus.loading ? (
+        <Loading rows={3} label="Loading command menus" />
+      ) : menus.error ? (
+        <ErrorState error={menus.error} />
+      ) : menus.data ? (
+        <>
+          <div className="notice info" style={{ fontSize: 13 }}>
+            {menus.data.note}
+          </div>
+
+          <div className="grid two">
+            {menus.data.menus.map((menu) => (
+              <div key={menu.compartment}>
+                <h3 style={{ fontSize: 14, margin: '0 0 6px' }}>
+                  {menu.compartment === 'EXTERNAL' ? 'Recruitment bot' : 'Employee bot'}
+                </h3>
+                <p className="hint" style={{ marginTop: 0 }}>
+                  {menu.builtIn.length} built-in · {menu.curated.length} from bot training
+                </p>
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                  {menu.effective.map((entry) => (
+                    <li key={entry.command}>
+                      <span className="mono">/{entry.command}</span> — {entry.description}
+                    </li>
+                  ))}
+                </ul>
+                {menu.omitted.length > 0 ? (
+                  <div className="notice warn" style={{ fontSize: 13, marginTop: 8 }}>
+                    {menu.omitted.length} command(s) exceed Telegram's limit and will not be sent.
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+
+          <div className="toolbar" style={{ marginBottom: 0, marginTop: 12 }}>
+            <button type="button" className="primary" disabled={syncing} onClick={sync}>
+              {syncing ? 'Pushing…' : 'Push menus to Telegram'}
+            </button>
+            <span className="hint">Replaces each bot's whole menu.</span>
+          </div>
+
+          {results ? (
+            <ul style={{ marginTop: 10, paddingLeft: 18, fontSize: 13 }}>
+              {results.map((result) => (
+                <li key={result.compartment}>
+                  {result.compartment === 'EXTERNAL' ? 'Recruitment bot' : 'Employee bot'}:{' '}
+                  {!result.configured
+                    ? 'no bot token configured — skipped'
+                    : result.synced
+                      ? `${result.commands.length} command(s) published`
+                      : 'Telegram rejected the update'}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </>
+      ) : null}
     </Card>
   )
 }

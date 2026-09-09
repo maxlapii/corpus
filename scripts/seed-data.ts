@@ -306,6 +306,18 @@ const CURATED_ANSWERS = [
     phrases: ['how to apply', 'where do I send my CV', 'application process', 'can I apply here'],
   },
   {
+    question: 'What benefits do you offer?',
+    answer:
+      'Full-time staff receive health cover from their first day, 18 days of paid annual leave, ' +
+      'and a company pension contribution.',
+    category: 'GENERAL',
+    audience: 'BOTH' as const,
+    classification: 'PUBLIC' as const,
+    command: 'benefits',
+    commandDescription: 'What we offer employees',
+    phrases: ['what benefits do you have', 'company benefits', 'perks'],
+  },
+  {
     question: 'Do you offer remote or hybrid work?',
     answer:
       'Some roles are remote-friendly. Each job advert states whether remote work is allowed, ' +
@@ -352,6 +364,8 @@ const CURATED_ANSWERS = [
   },
   {
     question: 'How do I contact the HR team?',
+    command: 'hr',
+    commandDescription: 'How to reach the HR team',
     answer:
       'Reach the HR team through the internal helpdesk, or ask this assistant. ' +
       'The team answers within one working day.',
@@ -565,6 +579,9 @@ export async function seedDatabase(
         classification: curated.classification,
         status: 'ACTIVE',
         ...(curated.requiresAccount === undefined ? {} : { requiresAccount: curated.requiresAccount }),
+        ...('command' in curated && curated.command
+          ? { command: curated.command, commandDescription: curated.commandDescription }
+          : {}),
         effectiveFrom: `${year - 1}-01-01`,
         effectiveTo: null,
         phrases: curated.phrases,

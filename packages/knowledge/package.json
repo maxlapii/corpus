@@ -10,9 +10,9 @@
     "./*": "./src/*.ts"
   },
   "dependencies": {
-    "@corpus/shared": "*",
-    "@corpus/domain": "*",
     "@corpus/db": "*",
-    "@corpus/security": "*"
+    "@corpus/domain": "*",
+    "@corpus/security": "*",
+    "@corpus/shared": "*"
   }
 }
