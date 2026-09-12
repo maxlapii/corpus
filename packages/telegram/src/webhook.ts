@@ -47,9 +47,11 @@ export function normaliseUpdate(raw: unknown): NormalisedUpdate | null {
     .slice(0, MAX_TEXT_CHARS)
     .trim()
   const document = normaliseDocument(message?.document)
+  const unsupportedAttachment = !document && hasUnsupportedAttachment(message)
 
-  // A file with no caption is a real message; only a genuinely empty one is not.
-  if (text.length === 0 && !document) return null
+  // A file with no caption is a real message, and so is a photo we cannot
+  // accept — answering that with silence looks like a broken bot.
+  if (text.length === 0 && !document && !unsupportedAttachment) return null
 
   const commandMatch = /^\/([A-Za-z0-9_]{1,32})(?:@[A-Za-z0-9_]+)?\s*([\s\S]*)$/.exec(text)
 
@@ -64,7 +66,25 @@ export function normaliseUpdate(raw: unknown): NormalisedUpdate | null {
     displayName: [from.first_name, from.last_name].filter(Boolean).join(' ') || from.username || 'Unknown',
     isBot,
     document,
+    unsupportedAttachment,
   }
+}
+
+/**
+ * A photo, video or voice note. Telegram sends a CV photographed rather than
+ * attached as `photo`, not `document`, and the two are easy to confuse in a
+ * mobile client.
+ */
+function hasUnsupportedAttachment(message: TelegramMessage | undefined): boolean {
+  if (!message) return false
+  return Boolean(
+    (Array.isArray(message.photo) && message.photo.length > 0) ||
+      message.video ||
+      message.audio ||
+      message.voice ||
+      message.video_note ||
+      message.sticker,
+  )
 }
 
 const MAX_FILENAME_CHARS = 200

@@ -1,8 +1,7 @@
 /**
  * Candidate CVs (CLAUDE.md §9, §21, §38).
  *
- *   GET    /cvs                      — listing across candidates
- *   POST   /cvs                      — multipart upload for one candidate
+ *   GET    /cvs                      — filtered listing, with facet counts
  *   GET    /cvs/:id                  — metadata plus the extracted text
  *   GET    /cvs/:id/download         — the original file
  *   PUT    /cvs/:id/text             — paste text a parser could not read
@@ -11,10 +10,13 @@
  *
  * A CV is CONFIDENTIAL, so every route resolves the document first and lets the
  * gateway judge the stored classification rather than anything in the request.
+ *
+ * There is deliberately no upload route: CVs arrive on the Telegram bots — the
+ * candidate's own on the recruitment bot, a forwarded one on the employee bot —
+ * so this surface reads, filters and matches, and never ingests.
  */
 
 import {
-  badRequest,
   makePage,
   notFound,
   object,
@@ -23,11 +25,7 @@ import {
   str,
 } from '@corpus/shared'
 import { analyseCv, type MatchableRequirement } from '@corpus/domain'
-import {
-  CvTooLargeError,
-  MAX_CV_BYTES,
-  UnsupportedCvError,
-} from '@corpus/knowledge'
+import { MAX_CV_BYTES } from '@corpus/knowledge'
 import { Hono, type Context } from 'hono'
 import type { AppBindings } from '../context.js'
 import { readJsonBody } from '../middleware/body.js'
@@ -49,6 +47,9 @@ candidateDocumentRoutes.get('/', async (c) => {
     object({
       q: optional(str({ max: 120 })),
       kind: optional(str({ enum: ['CV', 'COVER_LETTER', 'OTHER'] })),
+      source: optional(str({ enum: ['TELEGRAM_EXTERNAL', 'TELEGRAM_INTERNAL', 'DASHBOARD'] })),
+      extraction: optional(str({ enum: ['OK', 'EMPTY', 'UNSUPPORTED', 'FAILED'] })),
+      flagged: optional(str({ enum: ['true', 'false'] })),
     }),
   )
 
@@ -63,56 +64,17 @@ candidateDocumentRoutes.get('/', async (c) => {
   const { items, total } = await container.repos.candidateDocuments.list(scopeOf(c), {
     ...(filters.q ? { query: filters.q } : {}),
     ...(filters.kind ? { kind: filters.kind as 'CV' } : {}),
+    ...(filters.source ? { source: filters.source as 'TELEGRAM_EXTERNAL' } : {}),
+    ...(filters.extraction ? { extractionStatus: filters.extraction as 'OK' } : {}),
+    ...(filters.flagged ? { injectionFlagged: filters.flagged === 'true' } : {}),
     limit: page.limit,
     offset: page.offset,
   })
-  return c.json(makePage(items, total, page))
-})
 
-candidateDocumentRoutes.post('/', async (c) => {
-  const container = c.get('container')
-  const identity = userIdentityOf(c)
-  const scope = scopeOf(c)
-
-  await container.gateway.require({
-    identity,
-    action: 'create',
-    resource: { type: CV_RESOURCE, tenantId: identity.tenantId, classification: 'CONFIDENTIAL' },
-    intent: 'APPLICATION_STAGE_UPDATE',
-    requestId: c.get('requestId'),
-  })
-
-  let form: FormData
-  try {
-    form = await c.req.formData()
-  } catch {
-    throw badRequest('Send the CV as a multipart form upload.')
-  }
-
-  const candidateId = String(form.get('candidateId') ?? '')
-  const file = asUploadedFile(form.get('file'))
-  if (!candidateId) throw badRequest('candidateId is required.')
-  if (!file) throw badRequest('A "file" part is required.')
-
-  const candidate = await container.repos.candidates.findById(scope, candidateId)
-  if (!candidate) throw notFound('candidate')
-
-  try {
-    const document = await container.cvIntake.store({
-      tenantId: identity.tenantId,
-      candidateId,
-      filename: file.name || 'cv',
-      contentType: file.type || 'application/octet-stream',
-      body: await file.arrayBuffer(),
-      source: 'DASHBOARD',
-      channel: 'WEB',
-      uploadedByUserId: identity.userId,
-    })
-    return c.json({ document }, 201)
-  } catch (e) {
-    if (e instanceof CvTooLargeError || e instanceof UnsupportedCvError) throw badRequest(e.message)
-    throw e
-  }
+  // Unfiltered counts, so the filter chips describe what is there rather than
+  // what survived the filter.
+  const facets = await container.repos.candidateDocuments.facets(scopeOf(c))
+  return c.json({ ...makePage(items, total, page), facets })
 })
 
 candidateDocumentRoutes.get('/:id', async (c) => {
@@ -232,25 +194,6 @@ candidateDocumentRoutes.get('/:id/match/:jobId', async (c) => {
       'candidate. Every match shows the sentence it came from so a person can check it.',
   })
 })
-
-interface UploadedFile {
-  name: string
-  type: string
-  size: number
-  arrayBuffer(): Promise<ArrayBuffer>
-}
-
-function asUploadedFile(entry: unknown): UploadedFile | null {
-  if (typeof entry !== 'object' || entry === null) return null
-  const candidate = entry as Partial<UploadedFile>
-  if (typeof candidate.arrayBuffer !== 'function' || typeof candidate.size !== 'number') return null
-  return {
-    name: typeof candidate.name === 'string' ? candidate.name : 'cv',
-    type: typeof candidate.type === 'string' ? candidate.type : '',
-    size: candidate.size,
-    arrayBuffer: candidate.arrayBuffer.bind(candidate) as () => Promise<ArrayBuffer>,
-  }
-}
 
 /** Load the document and let the gateway judge its stored classification. */
 async function requireDocument(

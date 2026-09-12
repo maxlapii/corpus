@@ -93,7 +93,15 @@ export class CandidateDocumentRepository {
    */
   async list(
     scope: TenantScope,
-    options: { query?: string; kind?: CandidateDocument['kind']; limit: number; offset: number },
+    options: {
+      query?: string
+      kind?: CandidateDocument['kind']
+      source?: CandidateDocument['source']
+      extractionStatus?: CandidateDocument['extractionStatus']
+      injectionFlagged?: boolean
+      limit: number
+      offset: number
+    },
   ): Promise<{ items: CandidateDocumentListItem[]; total: number }> {
     const where = ['d.tenant_id = ?']
     const params: (string | number)[] = [scope.tenantId]
@@ -101,6 +109,18 @@ export class CandidateDocumentRepository {
     if (options.kind) {
       where.push('d.kind = ?')
       params.push(options.kind)
+    }
+    if (options.source) {
+      where.push('d.source = ?')
+      params.push(options.source)
+    }
+    if (options.extractionStatus) {
+      where.push('d.extraction_status = ?')
+      params.push(options.extractionStatus)
+    }
+    if (options.injectionFlagged !== undefined) {
+      where.push('d.injection_flagged = ?')
+      params.push(options.injectionFlagged ? 1 : 0)
     }
     if (options.query) {
       where.push("(c.name LIKE ? ESCAPE '\\' OR c.email LIKE ? ESCAPE '\\' OR d.filename LIKE ? ESCAPE '\\')")
@@ -200,6 +220,36 @@ export class CandidateDocumentRepository {
       [scope.tenantId, id],
     )
     return result.meta.changes === 1
+  }
+
+  /** Counts for the dashboard's filter chips, in one pass. */
+  async facets(scope: TenantScope): Promise<{
+    total: number
+    bySource: Record<string, number>
+    byExtraction: Record<string, number>
+    flagged: number
+  }> {
+    const rows = await this.db.many<Row>(
+      `SELECT source, extraction_status, injection_flagged, COUNT(*) AS c
+         FROM candidate_documents WHERE tenant_id = ?
+        GROUP BY source, extraction_status, injection_flagged`,
+      [scope.tenantId],
+    )
+
+    const bySource: Record<string, number> = {}
+    const byExtraction: Record<string, number> = {}
+    let total = 0
+    let flagged = 0
+    for (const row of rows) {
+      const count = asNumber(row.c)
+      total += count
+      const source = asString(row.source)
+      const status = asString(row.extraction_status)
+      bySource[source] = (bySource[source] ?? 0) + count
+      byExtraction[status] = (byExtraction[status] ?? 0) + count
+      if (asNumber(row.injection_flagged) === 1) flagged += count
+    }
+    return { total, bySource, byExtraction, flagged }
   }
 
   async countForCandidate(scope: TenantScope, candidateId: string): Promise<number> {

@@ -1,7 +1,11 @@
 'use client'
 
 /**
- * CVs — store, preview and match against a job (CLAUDE.md §21, §33, §38).
+ * CVs — preview, filter and match against a job (CLAUDE.md §21, §33, §38).
+ *
+ * A reading surface, not an intake one: CVs arrive on the Telegram bots, so
+ * there is no upload here. That keeps one ingestion path with one set of
+ * checks, and makes the provenance on every row meaningful.
  *
  * Two things this page is careful about:
  *
@@ -29,6 +33,14 @@ import {
 import { useApi } from '@/lib/use-api'
 
 type ExtractionStatus = 'OK' | 'EMPTY' | 'UNSUPPORTED' | 'FAILED'
+type CvSource = 'TELEGRAM_EXTERNAL' | 'TELEGRAM_INTERNAL' | 'DASHBOARD'
+
+interface CvFacets {
+  total: number
+  bySource: Record<string, number>
+  byExtraction: Record<string, number>
+  flagged: number
+}
 
 interface CvListItem {
   id: string
@@ -41,7 +53,7 @@ interface CvListItem {
   byteSize: number
   extractionStatus: ExtractionStatus
   injectionFlagged: boolean
-  source: 'TELEGRAM_EXTERNAL' | 'DASHBOARD'
+  source: CvSource
   uploadedAt: string
 }
 
@@ -96,9 +108,15 @@ const PAGE_SIZE = 20
 
 const EXTRACTION_LABEL: Record<ExtractionStatus, string> = {
   OK: 'Text read',
-  EMPTY: 'No text layer',
+  EMPTY: 'Needs text',
   UNSUPPORTED: 'Format not readable',
   FAILED: 'Could not be read',
+}
+
+const SOURCE_LABEL: Record<CvSource, string> = {
+  TELEGRAM_EXTERNAL: 'Candidate',
+  TELEGRAM_INTERNAL: 'Forwarded',
+  DASHBOARD: 'Uploaded',
 }
 
 const cvTextStyle: CSSProperties = {
@@ -135,45 +153,15 @@ function formatBytes(value: number): string {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`
 }
 
-/** Multipart upload: the shared api() helper only speaks JSON. */
-async function uploadCv(candidateId: string, file: File): Promise<{ document: CvListItem }> {
-  const form = new FormData()
-  form.append('file', file, file.name)
-  form.append('candidateId', candidateId)
-
-  const headers: Record<string, string> = {}
-  const token = getCsrfToken()
-  if (token) headers[CSRF_HEADER] = token
-
-  const response = await fetch(`${API_BASE}/cvs`, {
-    method: 'POST',
-    headers,
-    credentials: 'include',
-    body: form,
-  })
-  const text = await response.text()
-  let payload: Record<string, unknown> = {}
-  try {
-    payload = text ? (JSON.parse(text) as Record<string, unknown>) : {}
-  } catch {
-    payload = {}
-  }
-  if (!response.ok) {
-    const error = (payload.error as ApiError | undefined) ?? {
-      code: 'UNKNOWN',
-      message: 'The upload failed.',
-    }
-    throw new ApiRequestError(response.status, error)
-  }
-  return payload as unknown as { document: CvListItem }
-}
-
 export default function CvsPage() {
   const { user } = useSession()
   const mayRead = can(user, 'candidate.document.read')
   const mayManage = can(user, 'candidate.document.manage')
 
   const [search, setSearch] = useState('')
+  const [source, setSource] = useState<CvSource | ''>('')
+  const [extraction, setExtraction] = useState<ExtractionStatus | ''>('')
+  const [flagged, setFlagged] = useState<'' | 'true'>('')
   const [page, setPage] = useState(0)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [jobId, setJobId] = useState('')
@@ -186,10 +174,13 @@ export default function CvsPage() {
       offset: String(page * PAGE_SIZE),
     })
     if (search.trim()) params.set('q', search.trim())
+    if (source) params.set('source', source)
+    if (extraction) params.set('extraction', extraction)
+    if (flagged) params.set('flagged', flagged)
     return `/cvs?${params.toString()}`
-  }, [search, page])
+  }, [search, source, extraction, flagged, page])
 
-  const cvs = useApi<Page<CvListItem>>(mayRead ? listPath : null)
+  const cvs = useApi<Page<CvListItem> & { facets: CvFacets }>(mayRead ? listPath : null)
   const detail = useApi<CvDetail>(mayRead && selectedId ? `/cvs/${selectedId}` : null)
   const jobs = useApi<Page<JobListItem>>(mayRead ? '/jobs?limit=100&offset=0' : null)
   const match = useApi<MatchResponse>(
@@ -219,7 +210,7 @@ export default function CvsPage() {
     <Shell>
       <PageHeader
         title="CVs"
-        description="CVs candidates sent through the recruitment bot, or that HR uploaded here."
+        description="CVs candidates sent to the recruitment bot, or that staff forwarded on the employee bot."
       />
 
       {notice ? (
@@ -256,8 +247,82 @@ export default function CvsPage() {
             placeholder="Candidate name, e-mail or filename"
             onChange={(e) => setSearch(e.target.value)}
           />
-          <button type="submit">Search</button>
+          <label htmlFor="cv-source" className="visually-hidden">
+            Source
+          </label>
+          <select
+            id="cv-source"
+            value={source}
+            onChange={(e) => {
+              setSource(e.target.value as CvSource | '')
+              setPage(0)
+            }}
+          >
+            <option value="">Any source</option>
+            <option value="TELEGRAM_EXTERNAL">From the candidate</option>
+            <option value="TELEGRAM_INTERNAL">Forwarded by staff</option>
+            <option value="DASHBOARD">Uploaded (before bot intake)</option>
+          </select>
+
+          <label htmlFor="cv-extraction" className="visually-hidden">
+            Text status
+          </label>
+          <select
+            id="cv-extraction"
+            value={extraction}
+            onChange={(e) => {
+              setExtraction(e.target.value as ExtractionStatus | '')
+              setPage(0)
+            }}
+          >
+            <option value="">Any text status</option>
+            <option value="OK">Text read — matchable</option>
+            <option value="EMPTY">Needs text entering</option>
+            <option value="UNSUPPORTED">Format not readable</option>
+            <option value="FAILED">Could not be read</option>
+          </select>
+
+          <label htmlFor="cv-flagged" className="visually-hidden">
+            Flagged
+          </label>
+          <select
+            id="cv-flagged"
+            value={flagged}
+            onChange={(e) => {
+              setFlagged(e.target.value as '' | 'true')
+              setPage(0)
+            }}
+          >
+            <option value="">Flagged or not</option>
+            <option value="true">Flagged only</option>
+          </select>
+
+          <button type="submit">Apply</button>
+          {search || source || extraction || flagged ? (
+            <button
+              type="button"
+              onClick={() => {
+                setSearch('')
+                setSource('')
+                setExtraction('')
+                setFlagged('')
+                setPage(0)
+              }}
+            >
+              Clear
+            </button>
+          ) : null}
         </form>
+
+        {cvs.data?.facets ? (
+          <p className="hint" style={{ marginTop: 0 }}>
+            {cvs.data.facets.total} CV(s) in total ·{' '}
+            {cvs.data.facets.bySource.TELEGRAM_EXTERNAL ?? 0} from candidates ·{' '}
+            {cvs.data.facets.bySource.TELEGRAM_INTERNAL ?? 0} forwarded ·{' '}
+            {cvs.data.facets.byExtraction.EMPTY ?? 0} awaiting text ·{' '}
+            {cvs.data.facets.flagged} flagged
+          </p>
+        ) : null}
 
         {cvs.loading ? (
           <Loading rows={4} label="Loading CVs" />
@@ -266,7 +331,7 @@ export default function CvsPage() {
         ) : !cvs.data || cvs.data.items.length === 0 ? (
           <Empty
             title="No CVs yet"
-            hint="A candidate can send one to the recruitment bot after applying, or you can upload one below."
+            hint="Candidates send a CV to the recruitment bot with /cv after applying; staff forward one to the employee bot with /cv and the candidate's e-mail."
           />
         ) : (
           <>
@@ -297,7 +362,7 @@ export default function CvsPage() {
                         {cv.injectionFlagged ? <Badge value="FLAGGED" /> : null}
                       </td>
                       <td>
-                        <Badge value={cv.source === 'TELEGRAM_EXTERNAL' ? 'BOT' : 'UPLOAD'} />
+                        <Badge value={SOURCE_LABEL[cv.source] ?? cv.source} />
                       </td>
                       <td>{formatDateTime(cv.uploadedAt)}</td>
                       <td>
@@ -336,17 +401,6 @@ export default function CvsPage() {
           </>
         )}
       </Card>
-
-      {mayManage ? (
-        <UploadCard
-          onUploaded={(name) => {
-            setNotice(`Uploaded ${name}.`)
-            setActionError(null)
-            reload()
-          }}
-          onError={setActionError}
-        />
-      ) : null}
 
       {selectedId ? (
         <>
@@ -395,68 +449,6 @@ export default function CvsPage() {
         </>
       ) : null}
     </Shell>
-  )
-}
-
-function UploadCard({
-  onUploaded,
-  onError,
-}: {
-  onUploaded(filename: string): void
-  onError(error: unknown): void
-}) {
-  const [candidateId, setCandidateId] = useState('')
-  const [file, setFile] = useState<File | null>(null)
-  const [busy, setBusy] = useState(false)
-
-  async function submit(event: FormEvent) {
-    event.preventDefault()
-    if (!file || !candidateId.trim()) return
-    setBusy(true)
-    try {
-      const result = await uploadCv(candidateId.trim(), file)
-      onUploaded(result.document.filename)
-      setFile(null)
-      setCandidateId('')
-    } catch (e) {
-      onError(e)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <Card title="Upload a CV">
-      <form onSubmit={submit} aria-label="Upload a CV">
-        <div className="form-row">
-          <div className="field">
-            <label htmlFor="cv-candidate">Candidate id</label>
-            <input
-              id="cv-candidate"
-              value={candidateId}
-              placeholder="cnd_…"
-              onChange={(e) => setCandidateId(e.target.value)}
-            />
-            <div className="hint">From the candidate record on the Recruitment page.</div>
-          </div>
-          <div className="field">
-            <label htmlFor="cv-file">File</label>
-            <input
-              id="cv-file"
-              type="file"
-              accept=".pdf,.docx,.txt,.md"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            />
-            <div className="hint">PDF, DOCX, TXT or Markdown, up to 5 MB.</div>
-          </div>
-        </div>
-        <div className="toolbar" style={{ marginBottom: 0 }}>
-          <button type="submit" className="primary" disabled={busy || !file || !candidateId.trim()}>
-            {busy ? 'Uploading…' : 'Upload'}
-          </button>
-        </div>
-      </form>
-    </Card>
   )
 }
 
@@ -524,7 +516,7 @@ function PreviewCard({
     <Card title={document.filename}>
       <div className="toolbar" style={{ marginTop: 0 }}>
         <Badge value={EXTRACTION_LABEL[document.extractionStatus]} />
-        <Badge value={document.source === 'TELEGRAM_EXTERNAL' ? 'FROM BOT' : 'UPLOADED'} />
+        <Badge value={SOURCE_LABEL[document.source] ?? document.source} />
         <span className="hint">
           {candidate ? `${candidate.name} · ${candidate.email} · ` : ''}
           {formatBytes(document.byteSize)} · {formatDateTime(document.uploadedAt)}

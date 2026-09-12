@@ -973,8 +973,9 @@ that cannot read a PDF is not a feature:
 | Format | Extractor | Status |
 |---|---|---|
 | DOCX | A minimal ZIP reader over `word/document.xml`, inflated with `DecompressionStream('deflate-raw')` | **Works.** No dependency; only that one entry is read |
-| TXT / MD | Native | **Works.** |
 | PDF | None | **Accepted and stored, not parsed** — see below |
+| DOC (legacy) | None | **Accepted and stored, not parsed.** An OLE2 compound binary; a byte scrape yields plausible-looking garbage, which is worse than an honest "not read" |
+| TXT / MD / CSV / HTML / JSON | Native | Used by the **policy** pipeline. Not accepted as CVs — that allow-list is PDF/DOC/DOCX only |
 
 ### Why PDF text is not extracted
 

@@ -41,6 +41,7 @@ import {
 import { checkPasswordPolicy, hashPassword, needsRehash, verifyPassword } from '@corpus/auth'
 import { MemoryRateLimiter } from '@corpus/security'
 import { chunkDocument, estimateTokens, extractText, UnsupportedDocumentError } from '@corpus/knowledge'
+import { parseApplication } from '@corpus/telegram'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -386,6 +387,51 @@ describe('extraction', () => {
     const result = await extractText(encode('%PDF-1.7 not really a pdf'), 'application/pdf', 'x.pdf')
     expect(result.text).toBe('')
     expect(result.warnings.length).toBeGreaterThan(0)
+  })
+})
+
+describe('parsing an application from a /apply line', () => {
+  it('reads the documented order', () => {
+    expect(parseApplication('ENG-001 | Monika Chan | monika@example.com')).toEqual({
+      jobCode: 'ENG-001',
+      fullName: 'Monika Chan',
+      email: 'monika@example.com',
+    })
+  })
+
+  it('accepts plain spaces, with no separator to learn', () => {
+    expect(parseApplication('ENG-001 Monika Chan monika@example.com')).toEqual({
+      jobCode: 'ENG-001',
+      fullName: 'Monika Chan',
+      email: 'monika@example.com',
+    })
+  })
+
+  it('accepts the three fields in any order', () => {
+    expect(parseApplication('monika@example.com | Monika Chan | eng-001')).toEqual({
+      jobCode: 'ENG-001',
+      fullName: 'Monika Chan',
+      email: 'monika@example.com',
+    })
+  })
+
+  it('tolerates the labels people add out of habit', () => {
+    expect(
+      parseApplication('Job: ENG-001\nName: Monika Chan\nEmail: monika@example.com'),
+    ).toEqual({ jobCode: 'ENG-001', fullName: 'Monika Chan', email: 'monika@example.com' })
+  })
+
+  it('refuses rather than guessing when a field is missing', () => {
+    // Exactly the message that dead-ended the flow before: a name alone.
+    expect(parseApplication('Name: Monika')).toBeNull()
+    expect(parseApplication('ENG-001 | Monika Chan')).toBeNull()
+    expect(parseApplication('Monika Chan | monika@example.com')).toBeNull()
+    expect(parseApplication('')).toBeNull()
+    expect(parseApplication('ENG-001 | monika@example.com')).toBeNull()
+  })
+
+  it('normalises the job code so a lower-case one still matches', () => {
+    expect(parseApplication('eng-001 | Monika Chan | monika@example.com')?.jobCode).toBe('ENG-001')
   })
 })
 

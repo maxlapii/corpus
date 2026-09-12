@@ -16,8 +16,20 @@
 import { prefixedId, safeParse, email as emailValidator, type Logger } from '@corpus/shared'
 import { tenantScope, type Repositories } from '@corpus/db'
 import type { IdentityResolver, TelegramIdentityService } from '@corpus/auth'
+import type { UserIdentity } from '@corpus/domain'
 import type { AIOrchestrator } from '@corpus/ai'
-import type { RateLimiter, RateLimitRule, SecurityEventService } from '@corpus/security'
+import type {
+  PolicyGateway,
+  RateLimiter,
+  RateLimitRule,
+  SecurityEventService,
+} from '@corpus/security'
+import {
+  CV_FORMATS_LABEL,
+  looksLikeAcceptedCv,
+  MAX_CV_BYTES,
+  type CvIntakeService,
+} from '@corpus/knowledge'
 import type { TelegramClient } from './client.js'
 import type { ReplayGuard } from './webhook.js'
 import type { NormalisedUpdate } from './types.js'
@@ -99,10 +111,14 @@ export interface InternalBotDeps {
   securityEvents: SecurityEventService
   rateLimiter: RateLimiter
   replayGuard: ReplayGuard
+  gateway: PolicyGateway
+  cvIntake: CvIntakeService
   logger: Logger
   tenantId: string
   messageRule: RateLimitRule
   verificationRule: RateLimitRule
+  /** Separate, tighter budget for file uploads. */
+  uploadRule: RateLimitRule
 }
 
 const UNVERIFIED_HELP = [
@@ -128,6 +144,7 @@ const VERIFIED_HELP = [
   '• /holidays — upcoming public holidays',
   '• /policy <question> — search HR policy',
   '• /approvals — leave awaiting your decision (managers)',
+  '• /cv <e-mail> — forward a candidate CV (HR)',
   '',
   'You can also just ask in your own words.',
 ].join('\n')
@@ -210,6 +227,17 @@ export class InternalBot {
           ? `${general}\n\n${UNVERIFIED_FOOTER}`
           : unverifiedMessage(resolution.reason),
       )
+      return
+    }
+
+    // A forwarded CV. Handled before any model call, and only for staff who
+    // may write to a candidate record — the gateway decides that, not the bot.
+    if (update.document) {
+      await this.handleCvForward(update, resolution.identity, requestId)
+      return
+    }
+    if (update.command === 'cv') {
+      await this.explainCvForward(update, resolution.identity, requestId)
       return
     }
 
@@ -303,6 +331,213 @@ export class InternalBot {
       update.command,
     )
     return answer ? answer.question : null
+  }
+
+  /**
+   * Attach a CV a member of staff forwarded to a candidate already on file.
+   *
+   * The candidate is named in the message caption — `/cv <e-mail>`, or a bare
+   * e-mail or application reference — because the sender is an employee, not
+   * the person the CV describes, so there is nothing in the Telegram identity
+   * to attach it to. An unknown address is refused rather than turned into a
+   * new candidate: creating recruitment records from a caption is more than a
+   * caption can carry, and the dashboard already does it properly.
+   */
+  private async handleCvForward(
+    update: NormalisedUpdate,
+    identity: UserIdentity,
+    requestId: string,
+  ): Promise<void> {
+    const file = update.document
+    if (!file) return
+
+    // Who may write to a candidate record is a gateway decision, and a DENY
+    // here is audited like any other.
+    const decision = await this.deps.gateway.authorize({
+      identity,
+      action: 'create',
+      resource: {
+        type: 'candidate.document',
+        tenantId: this.deps.tenantId,
+        classification: 'CONFIDENTIAL',
+      },
+      requestId,
+    })
+    if (!decision.allowed) {
+      await this.deps.client.sendMessage(update.chatId, decision.message)
+      return
+    }
+
+    const reference = (update.command === 'cv' ? update.commandArgs : update.text).trim()
+    if (reference.length === 0) {
+      await this.deps.client.sendMessage(
+        update.chatId,
+        'Send the file again with a caption naming the candidate, for example ' +
+          '"/cv jordan.applicant@example.test" or an application reference.',
+      )
+      return
+    }
+
+    const candidate = await this.findCandidate(reference)
+    if (!candidate) {
+      await this.deps.client.sendMessage(
+        update.chatId,
+        `I could not find a candidate matching "${reference.slice(0, 80)}". ` +
+          'Use their e-mail address or application reference, and create the candidate in the ' +
+          'dashboard first if they are new.',
+      )
+      return
+    }
+
+    if (!looksLikeAcceptedCv(file.fileName, file.mimeType)) {
+      await this.deps.client.sendMessage(
+        update.chatId,
+        `That file type is not accepted. Send a ${CV_FORMATS_LABEL} file.`,
+      )
+      return
+    }
+    if (file.fileSize > MAX_CV_BYTES) {
+      await this.deps.client.sendMessage(
+        update.chatId,
+        `That file is too large. The limit is ${MAX_CV_BYTES / 1024 / 1024} MB.`,
+      )
+      return
+    }
+
+    const budget = await this.deps.rateLimiter.consume(
+      `tg:cv:${update.telegramUserId}`,
+      this.deps.uploadRule,
+    )
+    if (!budget.allowed) {
+      await this.deps.client.sendMessage(
+        update.chatId,
+        `You have sent several files already. Please try again in ${budget.resetSeconds}s.`,
+      )
+      return
+    }
+
+    await this.deps.client.sendChatAction(update.chatId, 'upload_document')
+    const body = await this.deps.client.downloadFile(file.fileId, MAX_CV_BYTES)
+    if (!body) {
+      await this.deps.client.sendMessage(
+        update.chatId,
+        'I could not download that file. Please try sending it again.',
+      )
+      return
+    }
+
+    try {
+      const stored = await this.deps.cvIntake.store({
+        tenantId: this.deps.tenantId,
+        candidateId: candidate.id,
+        filename: file.fileName,
+        contentType: file.mimeType || 'application/octet-stream',
+        body,
+        source: 'TELEGRAM_INTERNAL',
+        channel: 'TELEGRAM_INTERNAL',
+        uploadedByUserId: identity.userId,
+      })
+
+      this.deps.logger.info('CV forwarded over Telegram', {
+        action: 'telegram.internal',
+        result: 'cv_stored',
+        channel: 'TELEGRAM_INTERNAL',
+        userId: identity.userId ?? undefined,
+        requestId,
+        bytes: stored.byteSize,
+      })
+
+      await this.deps.client.sendMessage(
+        update.chatId,
+        `Attached "${stored.filename}" to ${candidate.name}. ` +
+          (stored.extractionStatus === 'OK'
+            ? 'The text was read and can be matched against a job.'
+            : 'The text could not be read automatically — open it in the dashboard to enter it.'),
+      )
+    } catch (e) {
+      this.deps.logger.warn('CV forward failed', {
+        action: 'telegram.internal',
+        result: 'cv_failed',
+        channel: 'TELEGRAM_INTERNAL',
+        requestId,
+        error: e instanceof Error ? e.name : 'unknown',
+      })
+      await this.deps.client.sendMessage(
+        update.chatId,
+        'Something went wrong storing that file. Please try again shortly.',
+      )
+    }
+  }
+
+  /**
+   * `/cv` with nothing attached. Checks the permission first, so someone who
+   * may not forward a CV learns that immediately rather than after preparing a
+   * file, and confirms the candidate exists before they send anything.
+   */
+  private async explainCvForward(
+    update: NormalisedUpdate,
+    identity: UserIdentity,
+    requestId: string,
+  ): Promise<void> {
+    const decision = await this.deps.gateway.authorize({
+      identity,
+      action: 'create',
+      resource: {
+        type: 'candidate.document',
+        tenantId: this.deps.tenantId,
+        classification: 'CONFIDENTIAL',
+      },
+      requestId,
+      skipAudit: true,
+    })
+    if (!decision.allowed) {
+      await this.deps.client.sendMessage(update.chatId, decision.message)
+      return
+    }
+
+    const reference = update.commandArgs.trim()
+    if (reference.length === 0) {
+      await this.deps.client.sendMessage(
+        update.chatId,
+        [
+          'To attach a CV to a candidate, send the file with a caption naming them:',
+          '',
+          '  /cv jordan.applicant@example.test',
+          '  /cv SPA-XXXXXXXX   (an application reference)',
+          '',
+          `${CV_FORMATS_LABEL}, up to ${MAX_CV_BYTES / 1024 / 1024} MB. The candidate must ` +
+            'already exist — create them in the dashboard first if not.',
+        ].join('\n'),
+      )
+      return
+    }
+
+    const candidate = await this.findCandidate(reference)
+    await this.deps.client.sendMessage(
+      update.chatId,
+      candidate
+        ? `Found ${candidate.name}. Send the CV as a file with the same caption and I will attach it.`
+        : `I could not find a candidate matching "${reference.slice(0, 80)}". ` +
+            'Use their e-mail address or application reference.',
+    )
+  }
+
+  /** Resolve a caption to a candidate by e-mail or application reference. */
+  private async findCandidate(reference: string): Promise<{ id: string; name: string } | null> {
+    const scope = tenantScope(this.deps.tenantId)
+
+    if (reference.includes('@')) {
+      const byEmail = await this.deps.repos.candidates.findByEmail(scope, reference.toLowerCase())
+      return byEmail ? { id: byEmail.id, name: byEmail.name } : null
+    }
+
+    const application = await this.deps.repos.applications.findByReference(
+      scope,
+      reference.toUpperCase(),
+    )
+    if (!application) return null
+    const candidate = await this.deps.repos.candidates.findById(scope, application.candidateId)
+    return candidate ? { id: candidate.id, name: candidate.name } : null
   }
 
   private async handleVerifyRequest(update: NormalisedUpdate, requestId: string): Promise<void> {

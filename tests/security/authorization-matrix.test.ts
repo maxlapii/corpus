@@ -20,6 +20,16 @@ interface Case {
 
 const ALL_ROLES: RoleKey[] = ['employee', 'manager', 'hr', 'hrAdmin', 'admin']
 
+/** Distinct, far-future dates so no two matrix rows collide. */
+let holidayCounter = 0
+function nextHolidayDate(): string {
+  holidayCounter += 1
+  const month = String(1 + (holidayCounter % 12)).padStart(2, '0')
+  const day = String(1 + (holidayCounter % 28)).padStart(2, '0')
+  const year = 2031 + Math.floor(holidayCounter / 300)
+  return `${year}-${month}-${day}`
+}
+
 const CASES: Case[] = [
   {
     label: 'read own profile',
@@ -182,13 +192,11 @@ const CASES: Case[] = [
   },
   {
     label: 'manage holidays',
-    call: async (c) =>
-      (
-        await c.post('/holidays', {
-          date: `2031-0${1 + Math.floor(Math.random() * 8)}-1${Math.floor(Math.random() * 9)}`,
-          name: 'Test Holiday',
-        })
-      ).status,
+    // Each role in the matrix posts one holiday, and a duplicate date is a
+    // conflict rather than a success. A random date out of 72 collided across
+    // the three allowed roles often enough to fail roughly one run in twenty,
+    // so the dates are handed out in sequence instead.
+    call: async (c) => (await c.post('/holidays', { date: nextHolidayDate(), name: 'Test Holiday' })).status,
     allowed: ['hr', 'hrAdmin', 'admin'],
   },
   {

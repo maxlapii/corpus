@@ -28,6 +28,8 @@ export const EXTERNAL_BUILTIN_COMMANDS: readonly BotCommand[] = [
   { command: 'jobs', description: 'Browse current openings' },
   { command: 'apply', description: 'Apply for a job by its code' },
   { command: 'status', description: 'Check your application status' },
+  { command: 'cv', description: 'Attach your CV to your application' },
+  { command: 'cancel', description: 'Stop what we are in the middle of' },
 ]
 
 /** Built into `commandToNaturalLanguage` in `internal-bot.ts`. */
@@ -42,6 +44,7 @@ export const INTERNAL_BUILTIN_COMMANDS: readonly BotCommand[] = [
   { command: 'holidays', description: 'Upcoming public holidays' },
   { command: 'policy', description: 'Search HR policy' },
   { command: 'approvals', description: 'Leave awaiting your decision' },
+  { command: 'cv', description: 'Forward a candidate CV (HR)' },
 ]
 
 /** Telegram's own ceiling on a command menu. */

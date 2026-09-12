@@ -88,6 +88,20 @@ const MAX_MESSAGE_CHARS = 2000
 /** Two thirds of the query's stems must appear before an answer is reused. */
 const DEFAULT_CURATED_MIN_COVERAGE = 0.67
 
+/**
+ * What a candidate gets when nothing matched. Names the things they can
+ * actually do here, rather than referring them to a department they have no
+ * relationship with.
+ */
+const EXTERNAL_FALLBACK_REPLY = [
+  "I did not understand that. Here is what I can do:",
+  '',
+  '• /jobs — see current openings',
+  '• /apply — apply for one, one question at a time',
+  '• /cv — attach your CV once you have applied',
+  '• /status <reference> — check an application',
+].join('\n')
+
 /** Provider outage or a spent daily allowance — an operating state, not a crash. */
 const PROVIDER_UNAVAILABLE_REPLY =
   'The assistant is temporarily unavailable. Please try again later, or contact HR directly.'
@@ -457,12 +471,19 @@ export class AIOrchestrator {
       }
     }
 
-    // No fabrication: an empty answer becomes the standard HR referral.
+    // No fabrication: an empty answer becomes a referral rather than a guess.
+    // The referral has to suit the zone — telling a job candidate to "contact
+    // HR" about their own application is advice they cannot act on, and names
+    // an internal function to someone outside the company.
     if (!text.trim()) {
-      text =
-        intent === 'HR_POLICY_QUESTION' || intent === 'UNKNOWN'
-          ? INSUFFICIENT_KNOWLEDGE_REPLY
-          : "I can't help with that here. Please contact HR."
+      if (identity.zone === 'EXTERNAL') {
+        text = EXTERNAL_FALLBACK_REPLY
+      } else {
+        text =
+          intent === 'HR_POLICY_QUESTION' || intent === 'UNKNOWN'
+            ? INSUFFICIENT_KNOWLEDGE_REPLY
+            : "I can't help with that here. Please contact HR."
+      }
       if (intent === 'HR_POLICY_QUESTION' && request.persist !== false) {
         await this.deps.repos.conversations.recordUnanswered(scope, {
           conversationId,
@@ -662,6 +683,93 @@ export class AIOrchestrator {
     return { text: filtered.text, answerId: curated.answerId }
   }
 
+  /**
+   * Run one registered tool with arguments the caller already parsed.
+   *
+   * For a slash command the arguments are known exactly, so routing them
+   * through a model to be re-extracted can only lose information — and did:
+   * `/apply ENG-001 | Monika Chan | monika@x.test` became a candidate named
+   * "Monika Chan and my email is monika" once a provider regex re-read the
+   * sentence it had been rendered into.
+   *
+   * Authorisation is unchanged: this goes through `ToolRegistry.execute`, so
+   * the PolicyGateway still decides and still audits. What it skips is the
+   * guessing, and the provider call that paid for it.
+   */
+  async runTool(request: {
+    identity: Identity
+    toolName: string
+    args: Record<string, unknown>
+    requestId: string
+    userMessage: string
+    persist?: boolean
+    today?: DateOnly
+  }): Promise<{ ok: boolean; text: string }> {
+    const today = request.today ?? todayUtc()
+    const scope = tenantScope(request.identity.tenantId)
+
+    let conversationId: string | null = null
+    if (request.persist !== false) {
+      const conversation = await this.deps.repos.conversations.findOrCreate(scope, {
+        channel: request.identity.channel,
+        subjectKey: request.identity.subjectKey,
+        userId: request.identity.kind === 'USER' ? request.identity.userId : null,
+        candidateId:
+          request.identity.kind === 'ANONYMOUS' ? (request.identity.candidateId ?? null) : null,
+      })
+      conversationId = conversation.id
+      await this.deps.repos.conversations.appendMessage(scope, {
+        conversationId,
+        role: 'user',
+        content: truncate(request.userMessage, MAX_MESSAGE_CHARS),
+      })
+    }
+
+    const execution = await this.deps.tools.execute(request.toolName, request.args, {
+      identity: request.identity,
+      repos: this.deps.repos,
+      gateway: this.deps.gateway,
+      knowledgeSearch: this.deps.knowledgeSearch,
+      logger: this.deps.logger,
+      today,
+      requestId: request.requestId,
+      conversationId,
+      allowedClassifications: [],
+      limits: {
+        maxContextChunks: this.deps.limits.maxContextChunks,
+        maxPageSize: this.deps.limits.maxPageSize,
+      },
+    })
+
+    if (request.persist !== false && conversationId) {
+      await this.deps.repos.conversations.recordToolCall(scope, {
+        conversationId,
+        toolName: execution.toolName,
+        decision: execution.decision,
+        reasonCode: execution.reasonCode,
+        latencyMs: execution.latencyMs,
+      })
+    }
+
+    const text = execution.outcome.ok
+      ? formatToolResult(execution.outcome.result)
+      : execution.outcome.message
+
+    const filtered = filterAiResponse(text, {
+      groundedNumbers: execution.outcome.ok
+        ? (execution.outcome.result.groundedNumbers ?? [])
+        : [],
+    })
+    await this.persistAssistant(
+      scope,
+      conversationId,
+      filtered.text,
+      'PUBLIC_APPLY',
+      request.persist !== false,
+    )
+    return { ok: execution.outcome.ok, text: filtered.text }
+  }
+
   private async persistAssistant(
     scope: { tenantId: string },
     conversationId: string | null,
@@ -710,6 +818,25 @@ function compartmentFor(channel: Identity['channel']): 'EXTERNAL' | 'INTERNAL' {
  */
 function figuresIn(text: string): string[] {
   return [...text.matchAll(/\d[\d,]*(?:\.\d+)?/g)].map((m) => m[0])
+}
+
+/**
+ * Render an authorised tool result as plain text, with no model involved. The
+ * summary leads; the data becomes `Label: value` lines so a reference or a
+ * status is readable in a chat window.
+ */
+function formatToolResult(result: ToolResultData): string {
+  const lines = [result.summary]
+  for (const [key, value] of Object.entries(result.data ?? {})) {
+    if (value === null || value === undefined || typeof value === 'object') continue
+    lines.push(`${humanise(key)}: ${String(value)}`)
+  }
+  return lines.join('\n')
+}
+
+function humanise(key: string): string {
+  const spaced = key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ')
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1)
 }
 
 /** Keeps the audit row coherent when refusing an out-of-zone intent. */

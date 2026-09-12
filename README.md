@@ -431,10 +431,10 @@ builds for Pages with `npm run pages:build --workspace @corpus/web` and deploys 
 ## Testing
 
 ```bash
-npm test                   # all 659 tests (vitest run)
-npm run test:unit          # tests/unit        — 276 tests
+npm test                   # all 706 tests (vitest run)
+npm run test:unit          # tests/unit        — 282 tests
 npm run test:integration   # tests/integration —  76 tests
-npm run test:security      # tests/security    — 286 tests
+npm run test:security      # tests/security    — 327 tests
 npm run test:e2e           # tests/e2e         —  21 tests
 npm run test:watch         # vitest in watch mode
 
@@ -549,10 +549,11 @@ The migration path and its sequencing are described in [docs/roadmap.md](docs/ro
 - Recruitment: jobs and requirements, candidates, applications, stage transitions and application
   events, interviews and offers (both permission-gated, `interview.manage` and `offer.manage`), and
   a public job surface that can withhold a salary range per posting.
-- CVs: candidates send a PDF, DOCX, TXT or Markdown CV to the recruitment bot after applying, or HR
-  uploads one. DOCX/TXT/MD text is extracted automatically; a PDF is stored and downloadable but its
-  text must be pasted in (pdf.js cannot be bundled into workerd — see docs/rag.md §14a). Everything
-  is CONFIDENTIAL, previewable in the dashboard, and matchable against a job's structured
+- CVs: intake is Telegram-only via `/cv` — candidates send their own to the recruitment bot after
+  applying, staff forward one to the employee bot with the candidate's e-mail as the caption.
+  **PDF, DOC and DOCX** are accepted; DOCX text is read automatically, while PDF and legacy `.doc`
+  are stored and downloadable with their text pasted in by hand (see docs/rag.md §14a). Everything
+  is CONFIDENTIAL; the dashboard previews, filters and matches against a job's structured
   requirements — a deterministic, evidence-carrying, advisory report with no model involved.
 - Knowledge base: documents, versions with effective dates, chunks with classifications, ingestion
   through extraction and chunking, and classification-filtered search.

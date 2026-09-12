@@ -376,7 +376,7 @@ export interface CandidateDocument {
   extractor: string | null
   extractionWarnings: string[]
   injectionFlagged: boolean
-  source: 'TELEGRAM_EXTERNAL' | 'DASHBOARD'
+  source: 'TELEGRAM_EXTERNAL' | 'TELEGRAM_INTERNAL' | 'DASHBOARD'
   uploadedAt: string
   uploadedByUserId: string | null
 }

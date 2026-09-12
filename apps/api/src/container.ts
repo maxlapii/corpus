@@ -150,8 +150,15 @@ export function createContainer(env: WorkerEnv, requestId: string): Container {
   const answerSearch = new D1AnswerSearchService({ answers: repos.knowledgeAnswers, logger })
   // Hoisted so the command-sync service and the returned container share one
   // client per bot rather than each making its own.
-  const externalBotClient = new TelegramClient(config.telegram.externalBotToken, { logger })
-  const internalBotClient = new TelegramClient(config.telegram.internalBotToken, { logger })
+  // `TELEGRAM_FETCH` lets the test harness stand in for api.telegram.org, the
+  // same way `AI` injects a Workers AI binding. Absent in every real
+  // deployment, where the global fetch is used.
+  const telegramFetch =
+    typeof env.TELEGRAM_FETCH === 'function' ? (env.TELEGRAM_FETCH as typeof fetch) : undefined
+  const telegramOptions = { logger, ...(telegramFetch ? { fetchImpl: telegramFetch } : {}) }
+
+  const externalBotClient = new TelegramClient(config.telegram.externalBotToken, telegramOptions)
+  const internalBotClient = new TelegramClient(config.telegram.internalBotToken, telegramOptions)
 
   const commandSync = new CommandSyncService({
     answers: repos.knowledgeAnswers,

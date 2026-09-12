@@ -465,13 +465,24 @@ A CV is the most personal record the system holds, about someone who does not ev
 
 | Control | Where |
 |---|---|
-| Format allow-list (PDF, DOCX, TXT, MD) and a 5 MB cap | `CvIntakeService` — one path shared by the bot and the dashboard, so the two cannot drift |
+| Format allow-list (**PDF, DOC, DOCX**) and a 5 MB cap | `CvIntakeService` — one path shared by both bots, so they cannot drift. An allow-list is only as good as its shortest entry, so it names the three formats a CV actually arrives in and nothing else |
 | CONFIDENTIAL on every read | `candidate.document:*` rules; the route resolves the stored row before the gateway call |
 | Never in a chat | `maxRiskInChat: 'LOW'` on `candidate.document:read` |
 | Download hardening | `attachment` disposition with a sanitised filename, `no-store`, `nosniff` — the filename came from a candidate |
 | Tenant isolation | Every query is tenant-scoped; a cross-tenant id returns 404 |
 
-**Intake requires an identified candidate.** The external bot only attaches a CV to a candidate its Telegram id already resolves to. A file from an id that has never applied is refused outright — inventing an owner from a Telegram profile is exactly the identity guess §12 forbids. A test asserts no document row is created in that case.
+**A slash command's arguments go straight to its tool.** `/apply` is parsed in the bot and executed through `ToolRegistry.execute` — the PolicyGateway still decides and audits — with no provider call in between. Handing already-known arguments to a model to re-extract is a loss of fidelity, not a convenience: an earlier version did exactly that and created a candidate named "Monika Chan and my email is monika" after a provider regex over-matched the sentence it had been rendered into.
+
+**A half-finished application holds nothing.** `application_drafts` is conversational scratch space keyed by Telegram id: unvalidated, bound to no identity, granting nothing, expiring after an hour and swept by the retention job. A candidate record appears only when `submit_application` runs and the gateway allows it.
+
+**Intake is Telegram-only.** There is no upload route: a CV arrives either from the candidate on the recruitment bot or forwarded by staff on the employee bot, both via `/cv`. One ingestion path means one set of checks, and it makes the `source` column on every row a meaningful record of provenance.
+
+**Each bot identifies the owner differently, and neither guesses.**
+
+- *Recruitment bot*: the CV attaches to the candidate its Telegram id already resolves to — a link that exists only because they applied and gave a real name and e-mail. A file from an id that has never applied is refused outright; inventing an owner from a Telegram profile is exactly the identity guess §12 forbids.
+- *Employee bot*: the sender is an employee, not the person the CV describes, so the candidate is named in the caption — `/cv <e-mail-or-reference>`, or a bare reference. An unknown address is refused rather than turned into a new candidate. Forwarding requires `candidate.document.manage` through the PolicyGateway, so EMPLOYEE and MANAGER are refused with an audited DENY however the caption is written, and `uploaded_by_user_id` records who forwarded it. Running `/cv` on its own checks that permission **first**, so someone who may not forward a CV finds out before preparing a file.
+
+**Neither PDF nor legacy `.doc` text is read automatically.** Both are stored, checksummed and downloadable, with `extraction_status = EMPTY` and a warning telling the reader to paste the text in. A crude byte scrape of either produces plausible-looking garbage, which is worse than an honest "not read" for something a hiring decision rests on. DOCX is parsed natively.
 
 **A malicious CV is data.** Injection-shaped text is scanned, flagged and raises a `DOCUMENT_INJECTION` event carrying categories and a score, never the CV itself. It does **not** reject the upload: refusing it would let an attacker deny a genuine applicant by poisoning their own CV. The protection is that nothing treats the text as an instruction — the matcher only runs regular expressions over it, and the dashboard renders it inside a `<pre>` as a text node.
 
@@ -481,7 +492,7 @@ A CV is the most personal record the system holds, about someone who does not ev
 - Nothing decides anything: no threshold rejects a candidate, and the application stage machine is untouched.
 - No protected characteristic is extracted, matched or scored — age, gender, nationality, marital status and health are ignored even when a CV volunteers them.
 
-Proof: `tests/security/candidate-cvs.test.ts` (25), `tests/unit/cv-matching.test.ts` (17).
+Proof: `tests/security/candidate-cvs.test.ts` (66), `tests/unit/cv-matching.test.ts` (17).
 
 ---
 
@@ -621,8 +632,8 @@ Local results on 2026-09-07: `npx vitest run tests/security` → 3 files, 157 te
 | 19 | Input validation exists | `packages/shared/src/validate.ts`; `middleware/body.ts`; tool validators | `tests/unit/misc-units.test.ts` "validation"; `tests/unit/tool-registry.test.ts` "rejects invalid arguments before the handler runs"; `rate-limiting.test.ts` "rejects an oversized request body" |
 | 20 | Production state is not stored on local filesystem | D1 + R2 via `StorageService`; per-request container; memory fallbacks reported by `/health` | `tests/integration/repositories.test.ts`; `/health` `documentStorage` field |
 | 21 | Database migrations work | `migrations/*.sql`, `packages/db/src/migrations.ts` | `tests/integration/schema.test.ts` "applies all migrations exactly once", "enforces foreign keys" |
-| 22 | CI passes | `.github/workflows/ci.yml` (secret scan → lint → typecheck → unit → integration → security → e2e → RBAC drift → build) | Full suite passed locally on 2026-09-09 (659 tests). The GitHub Actions run itself must be confirmed in the repository's Actions tab. |
-| 23 | Security tests pass | `tests/security/*.test.ts` | `npm run test:security` → 286 passed (2026-09-09) |
+| 22 | CI passes | `.github/workflows/ci.yml` (secret scan → lint → typecheck → unit → integration → security → e2e → RBAC drift → build) | Full suite passed locally on 2026-09-12 (706 tests). The GitHub Actions run itself must be confirmed in the repository's Actions tab. |
+| 23 | Security tests pass | `tests/security/*.test.ts` | `npm run test:security` → 327 passed (2026-09-12) |
 
 ---
 

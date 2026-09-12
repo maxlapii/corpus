@@ -62,7 +62,7 @@ depend on.
 
 ## 2. Migrations at a glance
 
-Twelve forward-only SQL files, applied in filename order. There are no down-migrations.
+Fourteen forward-only SQL files, applied in filename order. There are no down-migrations.
 
 | File | Purpose | Tables created |
 | --- | --- | --- |
@@ -78,6 +78,8 @@ Twelve forward-only SQL files, applied in filename order. There are no down-migr
 | `migrations/0010_candidate_documents.sql` | Candidate CVs: file metadata, extracted text, extraction status | 1 |
 | `migrations/0011_rbac_reference.sql` | **Generated** reference data, reissued for the `candidate.document.*` permissions | 0 (data only) |
 | `migrations/0012_answer_commands.sql` | `command` / `command_description` on curated answers, plus two guard triggers | 0 (columns + triggers) |
+| `migrations/0013_cv_bot_sources.sql` | Rebuilds `candidate_documents` so `source` admits `TELEGRAM_INTERNAL`; adds a filter index | 1 (rebuilt) |
+| `migrations/0014_application_drafts.sql` | Part-finished bot applications, plus a 1-day retention policy | 1 |
 
 `tests/integration/schema.test.ts` asserts that all six apply cleanly to a real SQLite
 engine, that re-running is a no-op, and that every one of the 39 tables exists.
@@ -215,6 +217,16 @@ way a person might ask. The repository rebuilds it on any phrase change.
 The migration also adds `resolved_answer_id` and `resolved_by_user_id` to `unanswered_questions`,
 linking a gap the bot had to the curated answer that now covers it.
 
+### 3.11 `0013_cv_bot_sources.sql` — bot-only CV intake
+
+Widens the `source` CHECK to admit `TELEGRAM_INTERNAL`. SQLite cannot alter a CHECK in place, so
+the table is rebuilt (create, copy, drop, rename) — safe here precisely because nothing references
+`candidate_documents`. `DASHBOARD` is retained for rows created before intake moved to the bots.
+
+Also adds `idx_candidate_documents_filters` on `(tenant_id, source, extraction_status,
+injection_flagged)`, which backs the dashboard's filters now that reading and filtering is what that
+page is for.
+
 ### 3.10 `0012_answer_commands.sql` — bot commands
 
 Adds `command` and `command_description` to `knowledge_answers`, a partial unique index so one
@@ -230,7 +242,7 @@ Only PUBLIC answers are ever published to a bot menu; see `docs/security.md`, "B
 | `filename`, `content_type`, `byte_size`, `checksum`, `storage_key` | What arrived and where the original lives (R2 in production, never a local path — §4) |
 | `extracted_text`, `extraction_status`, `extractor`, `extraction_warnings` | The parsed text and how well that went. `OK` / `EMPTY` (a scan with no text layer) / `UNSUPPORTED` / `FAILED` |
 | `injection_flagged` | Recorded, never acted on — see below |
-| `source`, `uploaded_at`, `uploaded_by_user_id` | `TELEGRAM_EXTERNAL` when the candidate sent it, `DASHBOARD` when HR did; the user id is null for the former |
+| `source`, `uploaded_at`, `uploaded_by_user_id` | `TELEGRAM_EXTERNAL` when the candidate sent it themselves, `TELEGRAM_INTERNAL` when staff forwarded it (0013), `DASHBOARD` for rows predating bot-only intake. The user id is null for the first, set for the second |
 
 A CV is **CONFIDENTIAL** and every read goes through `candidate.document:read`. The extracted text
 is stored so HR can read and match against it without pulling the original from object storage on

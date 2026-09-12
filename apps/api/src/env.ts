@@ -6,6 +6,8 @@ export interface WorkerEnv extends Record<string, unknown> {
   RATE_LIMIT?: unknown
   /** Workers AI — inference with no API key, on the Worker's free tier. */
   AI?: unknown
+  /** Test-only stand-in for api.telegram.org. Never set in a deployment. */
+  TELEGRAM_FETCH?: unknown
 
   ENVIRONMENT?: string
   LOG_LEVEL?: string

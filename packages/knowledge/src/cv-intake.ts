@@ -1,10 +1,10 @@
 /**
- * CV intake — one path for both sources (CLAUDE.md §26).
+ * CV intake — one path for every source (CLAUDE.md §26).
  *
- * A CV arrives either from a candidate over Telegram or from HR through the
- * dashboard. Both go through here, so the size cap, the format allow-list, the
- * storage key, the extraction and the injection scan cannot drift apart
- * between them.
+ * A CV arrives from a candidate on the recruitment bot, or from a member of
+ * staff forwarding one on the employee bot. Both go through here, so the size
+ * cap, the format allow-list, the storage key, the extraction and the injection
+ * scan cannot drift apart between them.
  *
  * A CV is untrusted data end to end. Injection-shaped text is recorded as a
  * security event but never rejects the upload: refusing it would let an
@@ -18,15 +18,21 @@ import type { CandidateDocument } from '@corpus/domain'
 import { injectionSeverity, scanForInjection, type SecurityEventService } from '@corpus/security'
 import { extractText, UnsupportedDocumentError } from './extraction.js'
 
-/** Formats a CV realistically arrives in. */
+/**
+ * The formats a CV actually arrives in. Deliberately narrow: an allow-list is
+ * only as good as its shortest entry, and every extra type is another parser
+ * pointed at a stranger's file.
+ */
 export const CV_CONTENT_TYPES: readonly string[] = [
   'application/pdf',
+  'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'text/plain',
-  'text/markdown',
 ]
 
-export const CV_EXTENSIONS: readonly string[] = ['.pdf', '.docx', '.txt', '.md']
+export const CV_EXTENSIONS: readonly string[] = ['.pdf', '.doc', '.docx']
+
+/** Shown to a candidate, so it names formats rather than MIME types. */
+export const CV_FORMATS_LABEL = 'PDF, DOC or DOCX'
 
 /** Telegram caps a bot download at 20 MB; a CV has no business being close. */
 export const MAX_CV_BYTES = 5 * 1024 * 1024
@@ -48,7 +54,7 @@ export interface CvIntakeRequest {
   kind?: CandidateDocument['kind']
   uploadedByUserId?: string | null
   /** Channel recorded on a security event, so the source is visible. */
-  channel: 'TELEGRAM_EXTERNAL' | 'WEB'
+  channel: 'TELEGRAM_EXTERNAL' | 'TELEGRAM_INTERNAL' | 'WEB'
 }
 
 export class CvTooLargeError extends Error {
@@ -60,7 +66,7 @@ export class CvTooLargeError extends Error {
 
 export class UnsupportedCvError extends Error {
   constructor(readonly contentType: string) {
-    super('That file type is not accepted. Send a PDF, DOCX, TXT or Markdown file.')
+    super(`That file type is not accepted. Send a ${CV_FORMATS_LABEL} file.`)
     this.name = 'UnsupportedCvError'
   }
 }

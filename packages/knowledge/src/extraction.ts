@@ -8,6 +8,10 @@
  * Text-family formats are handled natively and DOCX by unpacking its XML with
  * `DecompressionStream`, which needs no dependency.
  *
+ * Legacy `.doc` (an OLE2 compound binary, not XML) is accepted and stored but
+ * not parsed: a crude byte scrape produces plausible-looking garbage, which is
+ * worse than an honest "text not read" for something a hiring decision rests on.
+ *
  * PDF is deliberately NOT parsed. `unpdf` (serverless pdf.js) works under Node
  * and fails under workerd — its `PDFWorker` static initialiser throws
  * "Cannot set properties of undefined (setting '_isSameOrigin')" once wrangler
@@ -26,10 +30,12 @@ export type SupportedContentType =
   | 'text/html'
   | 'application/json'
   | 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  | 'application/msword'
   | 'application/pdf'
 
 export const SUPPORTED_CONTENT_TYPES: readonly string[] = [
   'application/pdf',
+  'application/msword',
   'text/plain',
   'text/markdown',
   'text/csv',
@@ -89,6 +95,17 @@ export async function extractText(
     case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
       return extractFromDocx(body)
 
+    // Stored, not parsed — see the note at the top.
+    case 'application/msword':
+      return {
+        text: '',
+        extractor: 'doc-none',
+        warnings: [
+          'Legacy .doc text cannot be read automatically. Download the original, or paste the ' +
+            'text in so the CV can be matched against a job. Saving it as .docx also works.',
+        ],
+      }
+
     default:
       throw new UnsupportedDocumentError(contentType || 'unknown')
   }
@@ -115,6 +132,8 @@ function normaliseType(contentType: string, filename: string): string {
       return 'text/html'
     case 'pdf':
       return 'application/pdf'
+    case 'doc':
+      return 'application/msword'
     case 'docx':
       return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     default:

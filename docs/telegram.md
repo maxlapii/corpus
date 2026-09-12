@@ -16,6 +16,7 @@ It is written against the source. Where `CLAUDE.md` asks for something the code 
 8. [Update normalisation and what is not trusted](#8-update-normalisation-and-what-is-not-trusted)
 9. [External bot](#9-external-bot)
 9a. [CV uploads on the external bot](#9a-cv-uploads-on-the-external-bot)
+9b. [CV forwarding on the internal bot](#9b-cv-forwarding-on-the-internal-bot)
 10. [Internal bot](#10-internal-bot)
 10a. [Curated answers (bot training)](#10a-curated-answers-bot-training)
 11. [Identity verification flow](#11-identity-verification-flow)
@@ -321,13 +322,61 @@ Each turn is logged with `action: 'telegram.external'`, the intent, and `name:de
 
 ---
 
+## 9. Applying: three questions, asked one at a time
+
+`/apply` starts a short guided conversation rather than demanding a format:
+
+```text
+/apply
+  → Which job are you applying for? Send the job code, like ENG-001.
+ENG-001
+  → Thanks. What is your full name?
+Dara Sok
+  → And your e-mail address?
+dara.sok@example.test
+  → Application submitted for Senior Backend Engineer.
+    Reference: SPA-…
+    Send me your CV as a file and I will attach it.
+```
+
+The part-finished answers live in `application_drafts`, keyed by Telegram id and expiring after an
+hour. A draft is scratch space, not a record of anybody: nothing in it is validated, it is bound to
+no identity, and it grants nothing. A candidate exists only once `submit_application` runs.
+
+Each answer is classified **by shape**, not by a stored step number, so an e-mail typed at the name
+question still lands on the e-mail field and a job code never becomes somebody's name. Anyone who
+prefers one line can still send `/apply ENG-001 Dara Sok dara@example.test` — pipes, newlines and
+plain spaces all parse identically. `/cancel` abandons a draft, and a plain message is only ever
+captured while one is open, so ordinary conversation is untouched.
+
+The parsed fields go **straight to the registered `submit_application` tool** through
+`AIOrchestrator.runTool()` — still via `ToolRegistry`, so the PolicyGateway decides and audits, but
+with no provider call in between.
+
+That last part is load-bearing rather than an optimisation. An earlier version rendered the parsed
+fields back into a sentence (`"My name is Monika Chan and my email is …"`) and let the provider
+re-extract them; the provider's name regex ran past the name and created a candidate called
+*"Monika Chan and my email is monika"*. Arguments that are already known must not be laundered back
+through a model.
+
+A message the bot cannot classify — when no draft is open — gets a recruitment-appropriate reply listing `/jobs`, `/apply`,
+`/cv` and `/status` — **not** the internal "contact HR" referral, which names a department an
+outside candidate has no relationship with.
+
+---
+
 ## 9a. CV uploads on the external bot
 
 A candidate can send their CV as a Telegram document. The bot handles a file before any model call —
 a file is not a question.
 
+`/cv` is the discoverable way in — it is in the bot's command menu — but a file dragged in with no
+command works identically, because that is what people actually do.
+
 ```text
-document message
+/cv  (or a document message with no command)
+      ↓
+ no file attached ? ──→ explain how to send one, and say whether a CV is already on file
       ↓
  candidate resolved from telegram_user_id ? ──no──→ "apply first so I know who this belongs to"
       │ yes
@@ -351,13 +400,51 @@ Points that matter:
 - **The download URL embeds the bot token**, so it is never logged, returned or put in an error
   message — only the byte count is.
 - **Format and size are checked before downloading**, so a hostile 20 MB file costs no transfer.
+  Accepted formats are **PDF, DOC and DOCX** only.
+- **A photo is not a file.** Telegram sends a photographed CV as `photo`, not `document`, and that
+  used to normalise to nothing — the bot answered with silence, which is indistinguishable from
+  being broken. A photo, video or voice note now gets an explicit "send it as a file" reply.
+- **Every refusal is logged with its reason** (`cv_no_candidate`, `cv_bad_format`, `cv_too_large`,
+  `cv_rate_limited`, `cv_download_failed`) and answered. A failed upload was previously invisible
+  from both ends.
 - **A separate, tighter rate limit** than ordinary messages: a download costs far more than a reply.
-- **Extraction failure is not the candidate's problem.** A scanned PDF with no text layer is still a
-  received CV; it is stored, the original stays downloadable, and HR can paste the text in the
-  dashboard so it can be matched.
+- **Extraction failure is not the candidate's problem.** Neither PDF nor legacy `.doc` text is read
+  automatically; both are stored, the original stays downloadable, and HR pastes the text in the
+  dashboard so it can be matched. DOCX is read natively.
 
-Where it goes next: **Recruitment → CVs** in the dashboard. See `docs/database.md` §3.9 for the
+Where it goes next: **Recruitment → CVs** in the dashboard, which reads and filters but never
+ingests — intake is the bots. See `docs/database.md` §3.9 for the
 schema and `docs/security.md`, "Candidate CVs", for the access rules.
+
+---
+
+## 9b. CV forwarding on the internal bot
+
+Staff can forward a CV they received elsewhere. The sender is an employee, not the candidate, so
+there is nothing in the Telegram identity to attach the file to — the **caption names the
+candidate**: `/cv <e-mail-or-reference>`, or a bare reference.
+
+```text
+/cv <reference>  (with or without a file), from a verified employee
+      ↓
+ gateway.authorize(candidate.document:create)  ← needs `candidate.document.manage`
+      │                                          checked FIRST, so someone who may not forward
+      │ DENY → the gateway's own message           learns before preparing a file
+      ↓ ALLOW
+ no file attached ? ──→ explain the format, and confirm the candidate exists
+      ↓
+ candidate found by e-mail or reference ? ──no──→ refused; no candidate is created
+      ↓
+ format allow-list (PDF / DOC / DOCX) and 5 MB cap  ← before any download
+      ↓
+ upload rate limit → downloadFile → CvIntakeService
+      ↓
+ "Attached <file> to <candidate>." plus whether the text could be read
+```
+
+`uploaded_by_user_id` records who forwarded it, and `source` is `TELEGRAM_INTERNAL`, so the
+dashboard can tell a candidate's own CV from one staff supplied. A plain EMPLOYEE or MANAGER cannot
+forward: writing to a candidate record needs `candidate.document.manage`, an HR permission.
 
 ---
 

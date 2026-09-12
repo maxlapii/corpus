@@ -76,6 +76,8 @@ export const RESERVED_BOT_COMMANDS: readonly string[] = [
   'start', 'help', 'cancel', 'settings',
   // external
   'jobs', 'apply', 'status',
+  // both
+  'cv',
   // internal
   'verify', 'code', 'balance', 'leave', 'request', 'holidays', 'policy', 'approvals',
 ]

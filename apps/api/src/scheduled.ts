@@ -59,6 +59,12 @@ export async function applyRetention(
         // One-time codes are useless once expired; delete on expiry, not age.
         removed = await repos.verificationCodes.deleteExpired(nowIso())
         break
+      case 'application_drafts':
+        // Unvalidated personal data from a conversation nobody finished.
+        removed = (
+          await db.run('DELETE FROM application_drafts WHERE updated_at < ?', [before])
+        ).meta.changes
+        break
       case 'rate_limit_counters':
         removed = (
           await db.run('DELETE FROM rate_limit_counters WHERE expires_at < ?', [
