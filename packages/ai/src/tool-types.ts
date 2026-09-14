@@ -42,6 +42,13 @@ export interface InternalToolContext extends ToolContext {
 export interface ToolResultData {
   summary: string
   data?: Record<string, unknown>
+  /**
+   * The payload written out for a person to read. When a tool supplies it the
+   * orchestrator sends this instead of the JSON, which keeps a chat reply
+   * readable if the model is unavailable and the backend has to answer from
+   * tool output alone (§38, §46).
+   */
+  display?: string
   /** Figures the backend returned; the response filter redacts any others (§54). */
   groundedNumbers?: (string | number)[]
   citations?: { documentName: string; section: string | null; version: number }[]

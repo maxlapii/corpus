@@ -374,10 +374,16 @@ export class AIOrchestrator {
         continue
       }
       const result: ToolResultData = execution.outcome.result
-      toolSummaries.push(`${execution.toolName}: ${result.summary}`)
-      if (result.data) {
-        toolSummaries.push(JSON.stringify(result.data).slice(0, 2000))
-      }
+      // The tool's own name stays out of the material: it is internal
+      // architecture, and any model that echoes its context would put it in
+      // front of a user (§46). The summary already says what the payload is.
+      toolSummaries.push(result.summary)
+      // A tool that can write itself out does; only otherwise is the raw JSON
+      // sent. That costs fewer tokens than JSON punctuation (§37) and leaves
+      // the fallbacks below something a person can actually read.
+      const rendered =
+        result.display ?? (result.data ? JSON.stringify(result.data).slice(0, 2000) : null)
+      if (rendered) toolSummaries.push(rendered)
       if (result.groundedNumbers) grounded.push(...result.groundedNumbers)
       if (result.citations) citations.push(...result.citations)
       // Retrieved passages are ALWAYS wrapped as untrusted data (§26).

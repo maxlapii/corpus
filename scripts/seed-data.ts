@@ -338,6 +338,88 @@ const CURATED_ANSWERS = [
     phrases: ['how long until I hear back', 'hiring timeline', 'when will I get a response'],
   },
   {
+    question: 'What is the working location?',
+    answer:
+      'Our office is in Phnom Penh, Cambodia. Each job advert names the location for that role, ' +
+      'and says whether it is office-based, hybrid or remote — check the opening you are interested in.',
+    category: 'RECRUITMENT',
+    audience: 'BOTH' as const,
+    classification: 'PUBLIC' as const,
+    phrases: [
+      'where is the office',
+      'what is the working location',
+      'where would I be based',
+      'which city is the job in',
+      'work location',
+    ],
+  },
+  {
+    question: 'What documents do I need to apply?',
+    answer:
+      'A CV is all you need to start. Send it as a PDF, DOC or DOCX file after you apply. ' +
+      'Certificates and references are only asked for later, if you reach the offer stage.',
+    category: 'RECRUITMENT',
+    audience: 'EXTERNAL' as const,
+    classification: 'PUBLIC' as const,
+    phrases: [
+      'what documents do I need',
+      'which documents should I send',
+      'do I need a cover letter',
+      'what do I have to submit',
+      'papers required to apply',
+    ],
+  },
+  {
+    question: 'Can I apply for two positions?',
+    answer:
+      'Yes. You may apply for as many open roles as you are qualified for, and each application ' +
+      'is reviewed separately. Apply once per role rather than sending the same role twice.',
+    category: 'RECRUITMENT',
+    audience: 'EXTERNAL' as const,
+    classification: 'PUBLIC' as const,
+    phrases: [
+      'can I apply for two positions',
+      'apply for multiple jobs',
+      'more than one application',
+      'apply for several roles',
+    ],
+  },
+  {
+    question: 'How do I request sick leave?',
+    answer:
+      'Tell your manager as early as you can on the first day of absence, then log the request here ' +
+      'or in the HR portal with the dates. A medical certificate is required from the third ' +
+      'consecutive day. Your manager confirms the request when you are back.',
+    category: 'LEAVE',
+    audience: 'INTERNAL' as const,
+    classification: 'PUBLIC' as const,
+    requiresAccount: false,
+    phrases: [
+      'how do I request sick leave',
+      'reporting sick',
+      'sick leave process',
+      'calling in sick',
+      'off sick procedure',
+    ],
+  },
+  {
+    question: 'How do I request annual leave?',
+    answer:
+      'Ask me to book it — give the dates and I will check your balance first — or use the HR portal. ' +
+      'Requests go to your manager for approval, so send them at least five working days ahead ' +
+      'where you can.',
+    category: 'LEAVE',
+    audience: 'INTERNAL' as const,
+    classification: 'PUBLIC' as const,
+    requiresAccount: false,
+    phrases: [
+      'how do I request annual leave',
+      'how to book time off',
+      'apply for holiday',
+      'leave request process',
+    ],
+  },
+  {
     question: 'How do I reset my payroll portal password?',
     answer:
       'Use the "Forgot password" link on the payroll portal sign-in page. ' +

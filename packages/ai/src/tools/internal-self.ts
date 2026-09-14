@@ -28,6 +28,13 @@ const NO_EMPLOYEE: ToolOutcome = {
 
 const EMPTY = { type: 'object', properties: {}, additionalProperties: false } as const
 
+/**
+ * A bulleted list for `display`, i.e. for a chat window rather than a model.
+ * Tools that return rows use it so the answer stays readable when the model is
+ * not there to phrase one (§38).
+ */
+const bullets = (lines: readonly string[]): string => lines.map((l) => `• ${l}`).join('\n')
+
 export const getMyProfileTool: ToolDefinition<Record<string, never>> = {
   name: 'get_my_profile',
   description: "Get the signed-in employee's own profile: department, position, manager, hire date.",
@@ -67,6 +74,14 @@ export const getMyProfileTool: ToolDefinition<Record<string, never>> = {
       ok: true,
       result: {
         summary: `Profile for ${employee.firstName} ${employee.lastName}.`,
+        display: bullets([
+          `Employee number: ${employee.employeeNo}`,
+          `Department: ${departments.find((d) => d.id === employee.departmentId)?.name ?? 'Unassigned'}`,
+          `Position: ${positions.find((p) => p.id === employee.positionId)?.title ?? 'Unassigned'}`,
+          `Manager: ${manager ? `${manager.firstName} ${manager.lastName}` : 'None'}`,
+          `Hire date: ${employee.hireDate}`,
+          `Employment type: ${employee.employmentType}`,
+        ]),
         data: {
           employeeNo: employee.employeeNo,
           name: `${employee.firstName} ${employee.lastName}`,
@@ -129,6 +144,13 @@ export const getMyLeaveBalanceTool: ToolDefinition<Record<string, never>> = {
       ok: true,
       result: {
         summary: `Leave balances for ${year}.`,
+        display: bullets(
+          rows.map(
+            (r) =>
+              `${r.leaveType}: ${r.available} day(s) available of ${r.entitled} ` +
+              `(${r.used} taken, ${r.pending} pending approval)`,
+          ),
+        ),
         data: { year, balances: rows },
         // Every number the model may state, so invented figures get redacted.
         groundedNumbers: rows.flatMap((r) => [r.entitled, r.used, r.pending, r.available, year]),
@@ -176,6 +198,11 @@ export const getMyLeaveRequestsTool: ToolDefinition<{ status?: string }> = {
       ok: true,
       result: {
         summary: `${items.length} leave request(s) found.`,
+        display: bullets(
+          items.map(
+            (r) => `${r.leaveTypeName}, ${r.startDate} to ${r.endDate} — ${r.workingDays} day(s), ${r.status}`,
+          ),
+        ),
         data: {
           requests: items.map((r) => ({
             id: r.id,
@@ -225,6 +252,11 @@ export const getMyLeaveHistoryTool: ToolDefinition<Record<string, never>> = {
       ok: true,
       result: {
         summary: `${thisYear.length} approved leave period(s) this year, ${total} day(s) total.`,
+        display: bullets(
+          thisYear.map(
+            (r) => `${r.leaveTypeName}, ${r.startDate} to ${r.endDate} — ${r.workingDays} day(s)`,
+          ),
+        ),
         data: {
           totalDays: total,
           periods: thisYear.map((r) => ({
@@ -264,6 +296,7 @@ export const getHolidaysTool: ToolDefinition<Record<string, never>> = {
       ok: true,
       result: {
         summary: `${holidays.length} upcoming holiday(s).`,
+        display: bullets(holidays.map((h) => `${h.date} — ${h.name}`)),
         data: { holidays: holidays.map((h) => ({ date: h.date, name: h.name })) },
       },
     }

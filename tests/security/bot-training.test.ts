@@ -635,7 +635,9 @@ describe('curated answers: the verified-account gate', () => {
         limit: 10,
       },
     )
-    expect(hits).toHaveLength(0)
+    // Named rather than counted: ungated answers legitimately mention an
+    // office, and the guarantee under test is about the gated one.
+    expect(hits.map((hit) => hit.question)).not.toContain('What is the office wifi password?')
   })
 
   it.each(['INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'] as const)(

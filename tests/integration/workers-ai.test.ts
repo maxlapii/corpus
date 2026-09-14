@@ -170,6 +170,10 @@ describe('Workers AI end to end', () => {
     expect(asked.body.toolCalls).toEqual([
       { name: 'get_holidays', decision: 'ALLOW', reasonCode: 'leave.read.self' },
     ])
-    expect(asked.body.reply).toContain('get_holidays')
+    // What the tool returned, written for a person: the fallback answer is the
+    // holiday list itself, not the payload and not the tool's internal name.
+    expect(asked.body.reply).toMatch(/upcoming holiday/i)
+    expect(asked.body.reply).not.toContain('get_holidays')
+    expect(asked.body.reply).not.toContain('{')
   })
 })

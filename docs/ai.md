@@ -226,10 +226,28 @@ message
 
 ### 4.1 Stage 1 — keyword rules
 
-`RULES` is an ordered array of `{ intent, pattern }`. Order encodes precedence:
-`EMPLOYEE_SALARY` is first, so "how much does Sarah earn" is classified as a
-salary question and pre-authorised (and denied) rather than drifting into a
-generic policy lookup.
+`RULES` is an ordered array of `{ intent, pattern, explanatoryOnly? }`. Order
+encodes precedence: `EMPLOYEE_SALARY` is first, so "how much does Sarah earn" is
+classified as a salary question and pre-authorised (and denied) rather than
+drifting into a generic policy lookup.
+
+**Questions are separated from instructions before the rules run.**
+`EXPLANATORY_QUESTION` matches the openings people use when they are asking how
+something works — "how do I…", "who…", "can I…", "what documents…". When it
+matches, every intent in `ACTION_INTENTS` (`CREATE_LEAVE_REQUEST`,
+`PUBLIC_APPLY`, the approve/reject pair, `JOB_MANAGE`,
+`APPLICATION_STAGE_UPDATE`) is skipped, and rules marked `explanatoryOnly` become
+eligible. Without that split the bot reads a question as an order to carry it
+out: "how do I request sick leave?" became an attempt to book leave with no
+dates, answered with "please rephrase", and "can I apply for two positions?"
+became an application with no name or e-mail address.
+
+The same split is why a balance rule must name a balance. The `MY_LEAVE_BALANCE`
+patterns require a word like *balance*, *entitlement*, *left* or *how many/much*,
+so "who approves my leave request?" is a policy question — answered from the
+approved process — rather than a request that returns the asker's own balances.
+Their *own* figures still never come from authored text: `SELF`-target intents
+skip the curated path entirely (§38).
 
 A rule that matches an intent not permitted in the caller's zone is **not**
 suppressed. The classifier returns it as-is; the orchestrator's intent gate then
@@ -418,9 +436,12 @@ re-appended explicitly.
 
 **7. Tool execution.** `planning.toolRequests.slice(0, 3)` caps a turn at three
 tools. Every call goes through `ToolRegistry.execute` — the orchestrator never
-touches a handler. Successful results contribute a summary line, up to 2000
-characters of `JSON.stringify(result.data)`, `groundedNumbers`, `citations`, and
-`contextPassages`. Retrieved passages are always passed through
+touches a handler. Successful results contribute a summary line, the
+payload (`result.display` when the tool wrote one, otherwise up to 2000
+characters of `JSON.stringify(result.data)`), `groundedNumbers`, `citations`, and
+`contextPassages`. The tool's own name is *not* included: it is internal
+architecture, and a model that echoed its context would put it in front of a
+user (§46). Retrieved passages are always passed through
 `wrapUntrusted(label, content)`, which sanitises `<untrusted>`, `<system>` and
 `<instructions>` markers out of the payload so content cannot close the fence and
 escape its framing (§26).
@@ -441,15 +462,19 @@ AUTHORISED CONTEXT:
 <untrusted source="Employee Handbook — 4.2 Annual leave">…</untrusted>
 
 TOOL RESULTS:
-get_my_leave_balance: Leave balances for 2026.
-{"year":2026,"balances":[…]}
+Leave balances for 2026.
+• Annual Leave: 20 day(s) available of 20 (0 taken, 0 pending approval)
+• Sick Leave: 10 day(s) available of 10 (0 taken, 0 pending approval)
 
 Answer the question using only the material above. Do not add figures
 or policy statements that are not present.
 ```
 
 Nothing outside that block is available to the model. If the answer comes back
-empty, `toolSummaries.join('\n')` is used rather than inventing prose.
+empty — or the provider dies after the tools have already run and been
+authorised — `toolSummaries.join('\n')` is used rather than inventing prose.
+That is why tools render their own payload: the fallback is shown to a person,
+so it has to read as an answer rather than as JSON.
 
 **9. No fabrication.** An empty final answer becomes
 `INSUFFICIENT_KNOWLEDGE_REPLY` — *"I don't have enough verified information to
@@ -591,8 +616,12 @@ the 60/hour AI budget). The result is deliberately coarse:
 
 ### 6.5 Result shape and grounding
 
-`ToolResultData` carries `summary`, optional `data`, `groundedNumbers`,
-`citations` and `contextPassages`. `groundedNumbers` is the mechanism behind the
+`ToolResultData` carries `summary`, optional `data`, optional `display`,
+`groundedNumbers`, `citations` and `contextPassages`. `display` is the payload
+written out for a person — `get_my_leave_balance`, `get_my_leave_requests`,
+`get_my_leave_history`, `get_holidays` and `get_my_profile` supply one. When it
+is present the orchestrator sends it to the model instead of the JSON, which
+costs fewer tokens (§37) and keeps the provider-failure fallback readable (§46). `groundedNumbers` is the mechanism behind the
 response filter's currency check: `get_my_leave_balance` returns every entitled,
 used, pending and available figure plus the year, so a model that invents a
 different number has it redacted (§54).

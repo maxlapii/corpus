@@ -101,7 +101,17 @@ on a clean checkout.
 | `docs-consistency.test.ts` | 6 | Guards this document and the rest against mechanical drift: every CLAUDE.md §48 file exists; every npm script is documented somewhere; every configuration key `config.ts` reads appears in `.env.example`; every test file is listed in this inventory; every AI provider the factory can build is described in `docs/ai.md` and `.env.example`; every wrangler binding the container expects is documented in `docs/deployment.md`. When it fails, update the docs — do not relax the assertion |
 | `ai-providers.test.ts` | 29 | Provider selection (binding-authenticated providers need no API key; `workers-ai` in production raises no `AI_API_KEY` error; Google still does; mock refused in production; unknown names fall back to mock); `WorkersAiProvider` request shape, tool advertising in the flat Workers AI format, tool-call parsing in both the native and OpenAI shapes, malformed calls dropped, unexpected response shapes tolerated, quota failures marked retryable, timeout enforcement; `GoogleProvider` key-in-header (never the URL), role mapping, JSON mode, schema-keyword stripping, and no provider body leaked on an HTTP error |
 
-### `tests/e2e` — 21 tests
+### `tests/e2e` — 33 tests
+
+`tests/e2e/bot-faq.test.ts` (12) covers both bots answering the questions people actually send, as
+chat rather than commands, driven through the real webhooks. A candidate gets the approved answer
+for the working location, the documents needed, applying for more than one role, how long hiring
+takes and how to apply — and a question about applying is not read as an application. An employee
+gets the approved process for requesting sick leave and for who approves leave, and gets their own
+balance from `get_my_leave_balance` rather than from any authored text, rendered without the payload
+or the tool's name. The last three hold the audience line: a candidate asking what someone earns,
+a candidate asking an internal process question, and an unverified Telegram user asking an
+account-gated one.
 
 `tests/e2e/bot-training-flow.test.ts` (6) covers the training loop end to end: HR publishes an
 answer and the external bot serves it verbatim while a DRAFT is not served; a new answer defaults to

@@ -535,6 +535,13 @@ Behaviour worth knowing when reasoning about a reply:
   sent alongside curated commands, since `setMyCommands` replaces the whole list.
 - **A curated answer never answers a person-specific question.** Intents whose `target` is `SELF` or
   `OTHER_EMPLOYEE` skip the curated path entirely: "my leave balance" comes from the database (§38).
+- **A question about doing something is not an instruction to do it.** The classifier separates the
+  two before its rules run (see `docs/ai.md` §4.1), so "how do I request sick leave?" reaches the
+  approved process rather than trying to book leave with no dates, "who approves my leave request?"
+  reaches the approval chain rather than the asker's balances, and "can I apply for two positions?"
+  is answered rather than filed as an application. The seed set ships answers for all three, plus the
+  working location, the documents a candidate needs, and how to request annual leave — `tests/e2e/bot-faq.test.ts`
+  drives them through the real webhooks.
 - Salary-shaped questions are never answered this way. `RESTRICTED`-risk intents skip the curated
   path and go to the PolicyGateway, which refuses and writes an audited `DENY`.
 - **An unlinked Telegram id can get general answers without verifying.** Not every internal question

@@ -29,12 +29,51 @@ export interface ClassifiedIntent {
 interface KeywordRule {
   intent: Intent
   pattern: RegExp
+  /** Only considered when the message is asking about something (see below). */
+  explanatoryOnly?: boolean
 }
+
+/**
+ * Phrasings that ask how something works rather than telling the bot to do it.
+ *
+ * "Request sick leave" is an instruction; "how do I request sick leave" is a
+ * question about the process. Reading the second as the first is why that
+ * question used to be answered by a failed attempt to book leave with no dates.
+ */
+const EXPLANATORY_QUESTION =
+  /^\s*(how\s+(do|does|did|can|could|would|should|long|to|is|are)\b|what('?s|\s+is|\s+are|\s+do|\s+does|\s+happens)\b|who\b|when\b|where\b|why\b|which\b|can\s+(i|you|we)\b|could\s+i\b|am\s+i\b|are\s+(we|there)\b|is\s+(there|it|my)\b|do\s+(i|you|we)\b|does\s+(the|it|my)\b|should\s+i\b)/i
+
+/**
+ * Intents that make the bot act on someone's behalf. A question is never one of
+ * these, however much vocabulary it shares with one.
+ */
+const ACTION_INTENTS: ReadonlySet<Intent> = new Set<Intent>([
+  'CREATE_LEAVE_REQUEST',
+  'CANCEL_LEAVE_REQUEST',
+  'APPROVE_LEAVE_REQUEST',
+  'REJECT_LEAVE_REQUEST',
+  'APPLICATION_STAGE_UPDATE',
+  'JOB_MANAGE',
+  'PUBLIC_APPLY',
+])
 
 /** Ordered: specific phrasings beat general ones. */
 const RULES: KeywordRule[] = [
   { intent: 'EMPLOYEE_SALARY', pattern: /\b(salary|salaries|compensation|payslip|pay\s*slip|how\s+much\s+(do|does|is)\s+.{0,20}(earn|paid|make)|wage)\b/i },
-  { intent: 'MY_LEAVE_BALANCE', pattern: /\b(my|remaining|left|available)\b.{0,20}\b(leave|annual|vacation|holiday)\b.{0,15}\b(balance|days|entitlement)?|\bhow\s+many\s+.{0,15}(leave|vacation)\s+days\b/i },
+  // A balance question must name a balance. The trailing group here used to be
+  // optional, so "who approves my leave request?" matched and was answered with
+  // the asker's balances instead of the approval chain.
+  { intent: 'MY_LEAVE_BALANCE', pattern: /\bhow\s+(many|much)\b[^?]{0,30}\b(leave|vacation|annual|holiday)\b/i },
+  { intent: 'MY_LEAVE_BALANCE', pattern: /\b(leave|vacation|holiday|annual)\s+(balance|entitlement)\b/i },
+  { intent: 'MY_LEAVE_BALANCE', pattern: /\b(remaining|available)\s+(annual\s+|sick\s+|paid\s+)?(leave|vacation|holiday)\b/i },
+  { intent: 'MY_LEAVE_BALANCE', pattern: /\b(annual|sick|vacation|my)\s+leave\b[^?]{0,15}\b(left|remaining|available|balance)\b/i },
+  // Asking who approves leave, or how to request it, is a policy question. It
+  // is listed before the leave *actions* so the process wins over the verb.
+  {
+    intent: 'HR_POLICY_QUESTION',
+    explanatoryOnly: true,
+    pattern: /\b(leave|time\s*off|absence|sick\s+(leave|day|pay)|maternity|paternity|compassionate)\b/i,
+  },
   { intent: 'CREATE_LEAVE_REQUEST', pattern: /\b(request|book|apply\s+for|submit|take)\b.{0,20}\bleave\b|\bi'?d?\s+like\s+to\s+take\b.{0,20}\b(off|leave)\b/i },
   { intent: 'CANCEL_LEAVE_REQUEST', pattern: /\bcancel\b.{0,20}\b(leave|request|time\s*off)\b/i },
   { intent: 'MY_LEAVE_REQUESTS', pattern: /\bmy\b.{0,15}\bleave\s+requests?\b|\bpending\s+leave\b/i },
@@ -75,7 +114,12 @@ export interface IntentClassifierDeps {
 /** Exposed so MockAIProvider routes identically instead of keeping its own copy. */
 export function matchIntentByKeywords(message: string): Intent | null {
   const trimmed = message.trim()
+  const explanatory = EXPLANATORY_QUESTION.test(trimmed)
   for (const rule of RULES) {
+    if (rule.explanatoryOnly && !explanatory) continue
+    // "Can I apply for two positions?" is a question about the rules, not an
+    // attempt to file two applications.
+    if (explanatory && ACTION_INTENTS.has(rule.intent)) continue
     if (rule.pattern.test(trimmed)) return rule.intent
   }
   return null
