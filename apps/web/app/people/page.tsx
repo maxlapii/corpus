@@ -218,7 +218,7 @@ export default function PeoplePage() {
         actions={
           canCreate ? (
             <button type="button" className="primary" onClick={() => select({ kind: 'create' })}>
-              Add employee
+              New employee
             </button>
           ) : undefined
         }
@@ -474,7 +474,7 @@ function CreateEmployeeForm({
 
   return (
     <Card
-      title="Add employee"
+      title="New employee"
       actions={
         <button type="button" className="small" onClick={onCancel} disabled={submitting}>
           Cancel
@@ -591,7 +591,7 @@ function CreateEmployeeForm({
           <SubmitError error={error} />
           <div className="form-actions">
             <button type="submit" className="primary" disabled={submitting}>
-              {submitting ? 'Adding…' : 'Add employee'}
+              {submitting ? 'Saving…' : 'New employee'}
             </button>
             <button type="button" onClick={onCancel} disabled={submitting}>
               Cancel

@@ -693,7 +693,7 @@ function DocumentPanel({
                 onClick={() => toggle('version')}
                 aria-pressed={mode === 'version'}
               >
-                Add new version
+                New version
               </button>
               <button type="button" onClick={() => toggle('edit')} aria-pressed={mode === 'edit'}>
                 Edit details
@@ -879,8 +879,8 @@ function AddVersionForm({
   }
 
   return (
-    <form onSubmit={onSubmit} aria-label="Add new version" className="card flat">
-      <h3>Add new version</h3>
+    <form onSubmit={onSubmit} aria-label="New version" className="card flat">
+      <h3>New version</h3>
       <p className="hint">
         The current version stops applying the day before this one takes effect.
       </p>

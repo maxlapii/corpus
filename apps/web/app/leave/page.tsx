@@ -739,7 +739,7 @@ function HolidaysCard({
 
       {canManage ? (
         <details className="more">
-          <summary>Add a holiday</summary>
+          <summary>New holiday</summary>
           <form onSubmit={onSubmit}>
             <fieldset disabled={submitting}>
               <div className="form-row">
@@ -757,7 +757,7 @@ function HolidaysCard({
               <SubmitError error={error} />
               <div className="form-actions">
                 <button className="primary" type="submit" disabled={submitting}>
-                  {submitting ? 'Adding…' : 'Add holiday'}
+                  {submitting ? 'Saving…' : 'New holiday'}
                 </button>
               </div>
             </fieldset>

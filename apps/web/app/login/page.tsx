@@ -9,6 +9,7 @@
 
 import { useRouter } from 'next/navigation'
 import { useEffect, useState, type FormEvent } from 'react'
+import { LogoMark } from '@/components/logo'
 import { useSession } from '@/components/session'
 import { Field, Loading, Notice } from '@/components/ui'
 import { ApiRequestError, login } from '@/lib/api'
@@ -56,15 +57,18 @@ export default function LoginPage() {
   return (
     <div className="auth-shell">
       <div className="auth-card card">
-        <div className="brand" style={{ padding: '0 0 14px' }}>
-          CORPUS
-          <span>HR Administration</span>
+        <div className="brand auth-brand">
+          <LogoMark size={44} title="CORPUS" />
+          <span className="brand-text">
+            <strong>CORPUS</strong>
+            <span>HR Administration</span>
+          </span>
         </div>
         {checking ? (
           <Loading rows={3} label="Checking your session" />
         ) : (
           <form onSubmit={onSubmit} aria-labelledby="login-title">
-            <h1 id="login-title" style={{ fontSize: 18, marginBottom: 14 }}>
+            <h1 id="login-title" className="auth-title">
               Sign in
             </h1>
             {error ? <Notice tone="error">{error}</Notice> : null}
@@ -91,7 +95,7 @@ export default function LoginPage() {
                 disabled={submitting}
               />
             </Field>
-            <button className="primary" type="submit" disabled={submitting} style={{ width: '100%' }}>
+            <button className="primary block" type="submit" disabled={submitting}>
               {submitting ? 'Signing in…' : 'Sign in'}
             </button>
             <p className="muted small-text">

@@ -673,7 +673,7 @@ function JobDetail({
       )}
       {canUpdate && job.status !== 'ARCHIVED' ? (
         <details className="more">
-          <summary>Add a requirement</summary>
+          <summary>New requirement</summary>
           <AddRequirementForm jobId={job.id} onAdded={onChanged} />
         </details>
       ) : null}
@@ -766,7 +766,7 @@ function AddRequirementForm({ jobId, onAdded }: { jobId: string; onAdded(): void
       </div>
       <div className="form-actions">
         <button type="submit" className="primary" disabled={busy}>
-          {busy ? 'Adding…' : 'Add requirement'}
+          {busy ? 'Saving…' : 'New requirement'}
         </button>
       </div>
     </form>

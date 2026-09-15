@@ -12,6 +12,7 @@
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { useEffect, useState, type ReactNode } from 'react'
+import { LogoMark } from '@/components/logo'
 import { useSession } from '@/components/session'
 import { Loading } from '@/components/ui'
 import { can } from '@/lib/api'
@@ -217,7 +218,7 @@ export function Shell({ children }: { children: ReactNode }) {
     <div className="shell">
       <header className="topbar">
         <Link href="/" className="brand">
-          <span className="brand-mark">C</span>
+          <LogoMark size={32} />
           <span className="brand-text">
             <strong>CORPUS</strong>
             <span>{active?.label ?? 'HR Administration'}</span>
@@ -236,7 +237,7 @@ export function Shell({ children }: { children: ReactNode }) {
 
       <nav className="sidebar" id="primary-nav" aria-label="Primary" data-open={menuOpen || undefined}>
         <Link href="/" className="brand sidebar-brand">
-          <span className="brand-mark">C</span>
+          <LogoMark size={34} />
           <span className="brand-text">
             <strong>CORPUS</strong>
             <span>HR Administration</span>
