@@ -117,6 +117,8 @@ export interface CurrentUser {
   email: string
   displayName: string
   employeeId: string | null
+  /** True when the employee record has a verified link to the internal Telegram bot. */
+  telegramLinked: boolean
   roles: string[]
   /** For UX only. The backend is authoritative (CLAUDE.md §34). */
   permissions: string[]

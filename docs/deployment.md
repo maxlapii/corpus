@@ -435,9 +435,13 @@ the API plus a CSRF token held in memory/`sessionStorage`.
 
 4. Note the resulting origin, e.g. `https://corpus-dashboard.pages.dev`.
 
-The dashboard ships the home page (`/`), eight sections — `/people`,
-`/recruitment`, `/leave`, `/knowledge`, `/assistant`, `/reports`, `/security`,
-`/settings` — and `/login`, all under `apps/web/app/`. Every page is a client
+The dashboard ships the home page (`/`), the sections `/people`,
+`/recruitment` (with `/recruitment/cvs`), `/leave`, `/knowledge` (Policies, with
+`/knowledge/training`, the Bot answers page), `/security` and `/settings`, and
+`/login`, all under `apps/web/app/`. There is no chat page and no separate
+reports page: the bots are the conversational surface, and the home page shows
+the few aggregates HR acts on (`/reports/summary`, `/reports/bot`,
+`/reports/tickets`). Every page is a client
 component; there are no server secrets and no server-side data fetching.
 Security headers for the static app are set in
 `apps/web/next.config.mjs`; the API sets its own, stricter set.

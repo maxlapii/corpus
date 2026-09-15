@@ -333,8 +333,9 @@ Telegram ─► POST /telegram/{external|internal}
 
 ## 5. AI request lifecycle
 
-Three surfaces feed the same pipeline — `POST /assistant/ask`
-(`apps/api/src/routes/assistant.ts`), `ExternalBot` and `InternalBot` — so
+Three surfaces feed the same pipeline — `ExternalBot`, `InternalBot` and
+`POST /assistant/ask` (`apps/api/src/routes/assistant.ts`, an API route kept
+for the security and end-to-end suites; the dashboard has no chat page) — so
 there is no second, weaker path to the model. The orchestrator
 (`packages/ai/src/orchestrator.ts`) sequences and budgets; it "holds no
 authority: every data access goes through ToolRegistry → PolicyGateway".

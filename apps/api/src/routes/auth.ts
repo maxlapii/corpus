@@ -110,12 +110,25 @@ authRoutes.post('/logout', requireSession, async (c) => {
 authRoutes.get('/me', requireSession, async (c) => {
   const identity = userIdentityOf(c)
   const session = c.get('session')!
+  const container = c.get('container')
+  // Whether the caller's own employee record has a verified, unrevoked link to
+  // the internal bot. Own record only, so no gateway decision is needed beyond
+  // the session itself.
+  const telegramLinked = identity.employeeId
+    ? (
+        await container.repos.telegramAccounts.listForEmployee(
+          { tenantId: identity.tenantId },
+          identity.employeeId,
+        )
+      ).some((a) => a.scope === 'INTERNAL' && a.verifiedAt !== null && a.revokedAt === null)
+    : false
   return c.json({
     user: {
       id: identity.userId,
       email: identity.email,
       displayName: identity.displayName,
       employeeId: identity.employeeId,
+      telegramLinked,
       roles: identity.roles,
       // Permissions are sent for UX only. The dashboard must not treat them as
       // authoritative — the backend re-checks everything (CLAUDE.md §34).

@@ -9,8 +9,8 @@
  * the user sees.
  */
 
-import { ApiRequestError } from '@/lib/api'
-import type { ReactNode } from 'react'
+import { ApiRequestError, type Page } from '@/lib/api'
+import { useId, type ReactNode } from 'react'
 
 export function Card({
   title,
@@ -174,9 +174,15 @@ const BADGE_TONE: Record<string, string> = {
   CRITICAL: 'danger',
 }
 
-export function Badge({ value }: { value: string }) {
-  const tone = BADGE_TONE[value.toUpperCase()] ?? 'muted'
-  return <span className={`badge ${tone}`}>{value.replace(/_/g, ' ')}</span>
+export type BadgeTone = 'ok' | 'warn' | 'danger' | 'info' | 'muted'
+
+/**
+ * Status chip. Enum values (APPROVED, PENDING…) pick their tone automatically;
+ * free text needs an explicit `tone` or it renders muted.
+ */
+export function Badge({ value, tone }: { value: string; tone?: BadgeTone }) {
+  const resolved = tone ?? BADGE_TONE[value.toUpperCase()] ?? 'muted'
+  return <span className={`badge ${resolved}`}>{value.replace(/_/g, ' ')}</span>
 }
 
 export function formatDate(value: string | null | undefined): string {
@@ -197,4 +203,155 @@ export function formatDateTime(value: string | null | undefined): string {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+// --- Shared form and layout primitives --------------------------------------
+
+/** Labelled form control with optional hint; the label is wired by `id`. */
+export function Field({
+  id,
+  label,
+  hint,
+  children,
+}: {
+  id: string
+  label: string
+  hint?: string
+  children: ReactNode
+}) {
+  return (
+    <div className="field">
+      <label htmlFor={id}>{label}</label>
+      {children}
+      {hint ? <div className="hint">{hint}</div> : null}
+    </div>
+  )
+}
+
+/** Inline status message. `error` uses role=alert; the others are polite. */
+export function Notice({
+  tone,
+  children,
+  style,
+}: {
+  tone: 'ok' | 'info' | 'warn' | 'error'
+  children: ReactNode
+  style?: React.CSSProperties
+}) {
+  return (
+    <div className={`notice ${tone}`} role={tone === 'error' ? 'alert' : 'status'} style={style}>
+      {children}
+    </div>
+  )
+}
+
+/** Renders the API's own message for a failed write: 403 as warn, else error. */
+export function SubmitError({ error }: { error: unknown }) {
+  if (!error) return null
+  if (error instanceof ApiRequestError && error.isForbidden) {
+    return <Notice tone="warn">{error.error.message}</Notice>
+  }
+  const message =
+    error instanceof ApiRequestError
+      ? error.error.message
+      : error instanceof Error
+        ? error.message
+        : 'Something went wrong.'
+  return <Notice tone="error">{message}</Notice>
+}
+
+/** Previous / next controls for a paged API response. */
+export function Pager<T>({ page, onChange }: { page: Page<T>; onChange(offset: number): void }) {
+  const from = page.total === 0 ? 0 : page.offset + 1
+  const to = page.offset + page.items.length
+  const showControls = page.hasMore || page.offset > 0
+  return (
+    <div className="toolbar" style={{ marginTop: 12, marginBottom: 0, justifyContent: 'space-between' }}>
+      <span style={{ color: 'var(--text-muted)', fontSize: 12 }} aria-live="polite">
+        {from.toLocaleString()}–{to.toLocaleString()} of {page.total.toLocaleString()}
+      </span>
+      {showControls ? (
+        <span className="actions">
+          <button
+            type="button"
+            className="small"
+            disabled={page.offset === 0}
+            onClick={() => onChange(Math.max(0, page.offset - page.limit))}
+          >
+            Previous
+          </button>
+          <button
+            type="button"
+            className="small"
+            disabled={!page.hasMore}
+            onClick={() => onChange(page.offset + page.limit)}
+          >
+            Next
+          </button>
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
+/** Horizontal tab strip. Tabs switch a page region; they are not routes. */
+export function Tabs<K extends string>({
+  tabs,
+  value,
+  onChange,
+  label,
+}: {
+  tabs: { key: K; label: string; count?: number }[]
+  value: K
+  onChange(key: K): void
+  label: string
+}) {
+  const id = useId()
+  return (
+    <div className="tabs" role="tablist" aria-label={label}>
+      {tabs.map((tab) => (
+        <button
+          key={tab.key}
+          type="button"
+          role="tab"
+          id={`${id}-${tab.key}`}
+          aria-selected={tab.key === value}
+          onClick={() => onChange(tab.key)}
+        >
+          {tab.label}
+          {typeof tab.count === 'number' ? (
+            <span className="badge muted" style={{ marginLeft: 6 }}>
+              {tab.count.toLocaleString()}
+            </span>
+          ) : null}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** Read-only label/value pairs for a record; stacks on narrow screens. */
+export function Facts({ items }: { items: { label: string; value: ReactNode }[] }) {
+  return (
+    <dl className="facts">
+      {items.map((item) => (
+        <FactRow key={item.label} label={item.label} value={item.value} />
+      ))}
+    </dl>
+  )
+}
+
+function FactRow({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <>
+      <dt>{label}</dt>
+      <dd>{value === null || value === undefined || value === '' ? '—' : value}</dd>
+    </>
+  )
+}
+
+/** "Title Case" from an UPPER_SNAKE enum value. */
+export function humanize(value: string | null | undefined): string {
+  if (!value) return '—'
+  return value.charAt(0) + value.slice(1).toLowerCase().replace(/_/g, ' ')
 }

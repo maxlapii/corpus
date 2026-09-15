@@ -37,6 +37,16 @@ const createBody = object({
 
 const decisionBody = object({ comment: optional(str({ max: 500 })) })
 
+/** The days still available on a balance — computed here, never in a client (CLAUDE.md §38). */
+function withAvailable<T extends { entitledDays: number; carriedOverDays: number; usedDays: number; pendingDays: number }>(
+  balance: T,
+): T & { availableDays: number } {
+  return {
+    ...balance,
+    availableDays: balance.entitledDays + balance.carriedOverDays - balance.usedDays - balance.pendingDays,
+  }
+}
+
 const balanceBody = object({
   employeeId: str({ min: 1, max: 40 }),
   leaveTypeId: str({ min: 1, max: 40 }),
@@ -82,7 +92,7 @@ leaveRoutes.get('/balance/me', async (c) => {
     identity.employeeId,
     year,
   )
-  return c.json({ year, balances })
+  return c.json({ year, balances: balances.map(withAvailable) })
 })
 
 leaveRoutes.get('/balance/:employeeId', async (c) => {
@@ -104,10 +114,8 @@ leaveRoutes.get('/balance/:employeeId', async (c) => {
   await orNotFound(Promise.resolve(employee), 'employee')
 
   const year = Number(c.req.query('year') ?? container.today.slice(0, 4))
-  return c.json({
-    year,
-    balances: await container.repos.leaveBalances.listForEmployee(scopeOf(c), employeeId, year),
-  })
+  const balances = await container.repos.leaveBalances.listForEmployee(scopeOf(c), employeeId, year)
+  return c.json({ year, balances: balances.map(withAvailable) })
 })
 
 leaveRoutes.put('/balance', async (c) => {

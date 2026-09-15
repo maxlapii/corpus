@@ -500,8 +500,8 @@ reason code and latency, giving the security dashboard a per-turn trail.
 
 `AssistantReply` returns `text`, `intent`, `toolCalls[]` (name, `ALLOW`/`DENY`,
 reason code), `citations[]`, `filterFindings[]`, `injectionDetected`, `usage`
-and `refused`. `apps/api/src/routes/assistant.ts` surfaces most of it so the
-dashboard can show *why* an answer was limited; the internal Telegram bot appends
+and `refused`. `apps/api/src/routes/assistant.ts` surfaces most of it so an API
+client — in practice the security tests — can see *why* an answer was limited; the internal Telegram bot appends
 citations as a `Source:` line (`packages/telegram/src/internal-bot.ts:172-176`).
 
 ---
@@ -890,7 +890,7 @@ does not do. Stated here rather than implied elsewhere.
   flow that needs it.
 - **No reporting tool.** The `REPORTING` intent exists and has a keyword rule,
   but no tool declares `report.read`, so a reporting question in chat reaches no
-  data. Reports are dashboard-only (`apps/api/src/routes/reports.ts`).
+  data. Aggregates are served by `apps/api/src/routes/reports.ts` to the dashboard home page only.
 - **HR and HR_ADMIN are not offered `approve_leave_request` / `reject_leave_request`
   in chat.** Those tools declare `permission: 'leave.approve.team'`, and
   `ROLE_PERMISSIONS.HR` / `.HR_ADMIN` grant `leave.approve.all` without

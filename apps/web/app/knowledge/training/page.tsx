@@ -1,28 +1,48 @@
 'use client'
 
 /**
- * Bot training — curated question/answer pairs for the external and internal
- * Telegram bots (CLAUDE.md §30, §33).
+ * Bot answers — the questions the Telegram bots answer directly, without a
+ * model turn (CLAUDE.md §30, §33).
  *
- * An answer published here is served verbatim, with no model turn, so the
- * audience and classification chosen on this form are the whole access control
- * for that text. The form therefore refuses an EXTERNAL audience above PUBLIC
- * before submitting — the same rule the API and the database both enforce, so
- * this check is a courtesy, never the guard.
+ * Layout: four tabs. "Answers" is a master/detail split (list left, editor
+ * right, actions first). "Unanswered questions" is the backlog a bot could not
+ * answer. "Test the bot" runs the real retrieval path. "Command menus" shows
+ * what each bot advertises and pushes it to Telegram.
+ *
+ * An answer published here is served verbatim, so the "Who is this for?"
+ * choice — audience, classification and whether a linked account is needed —
+ * is the whole access control for that text. The API and the database enforce
+ * the same rule, so anything this form does is a courtesy, never the guard.
  *
  * Permission checks are for UX only; the API re-authorises every request.
  */
 
-import { useCallback, useMemo, useState, type CSSProperties, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { PageHeader, Shell } from '@/components/shell'
-import { Badge, Card, Empty, ErrorState, Loading, formatDateTime } from '@/components/ui'
+import {
+  Badge,
+  Card,
+  Empty,
+  ErrorState,
+  Field,
+  Loading,
+  Notice,
+  Pager,
+  SubmitError,
+  Tabs,
+  formatDateTime,
+  type BadgeTone,
+} from '@/components/ui'
 import { useSession } from '@/components/session'
 import { ApiRequestError, api, can, type Page } from '@/lib/api'
-import { useApi } from '@/lib/use-api'
+import { useApi, type ApiState } from '@/lib/use-api'
+
+// --- Response shapes (mirror apps/api/src/routes/knowledge-answers.ts) -----
 
 type Classification = 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED'
 type Audience = 'EXTERNAL' | 'INTERNAL' | 'BOTH'
 type Status = 'DRAFT' | 'ACTIVE' | 'ARCHIVED'
+type Compartment = 'EXTERNAL' | 'INTERNAL'
 
 interface CuratedAnswer {
   id: string
@@ -62,13 +82,19 @@ interface PreviewMatch {
   wouldServe: boolean
 }
 
+interface PreviewResponse {
+  audience: Compartment
+  strategy: 'fts' | 'like' | 'none'
+  matches: PreviewMatch[]
+}
+
 interface BotCommand {
   command: string
   description: string
 }
 
 interface CommandMenu {
-  compartment: 'EXTERNAL' | 'INTERNAL'
+  compartment: Compartment
   builtIn: BotCommand[]
   curated: BotCommand[]
   effective: BotCommand[]
@@ -81,84 +107,183 @@ interface CommandMenusResponse {
 }
 
 interface SyncResult {
-  compartment: 'EXTERNAL' | 'INTERNAL'
+  compartment: Compartment
   configured: boolean
   synced: boolean
   commands: BotCommand[]
   omitted: BotCommand[]
 }
 
-interface PreviewResponse {
-  audience: 'EXTERNAL' | 'INTERNAL'
-  strategy: 'fts' | 'like' | 'none'
-  matches: PreviewMatch[]
-}
+// --- Labels ----------------------------------------------------------------
+
+type Tab = 'answers' | 'unanswered' | 'test' | 'commands'
 
 const AUDIENCES: Audience[] = ['EXTERNAL', 'INTERNAL', 'BOTH']
-const CLASSIFICATIONS: Classification[] = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']
 const STATUSES: Status[] = ['DRAFT', 'ACTIVE', 'ARCHIVED']
+
+const AUDIENCE_LABEL: Record<Audience, string> = {
+  EXTERNAL: 'Recruitment bot (candidates)',
+  INTERNAL: 'Employee bot (staff)',
+  BOTH: 'Both bots',
+}
+
+const AUDIENCE_TONE: Record<Audience, BadgeTone> = {
+  EXTERNAL: 'info',
+  INTERNAL: 'muted',
+  BOTH: 'warn',
+}
+
+const STATUS_LABEL: Record<Status, string> = {
+  DRAFT: 'Draft',
+  ACTIVE: 'Published',
+  ARCHIVED: 'Archived',
+}
+
+const STATUS_TONE: Record<Status, BadgeTone> = {
+  DRAFT: 'muted',
+  ACTIVE: 'ok',
+  ARCHIVED: 'muted',
+}
+
+const BOT_LABEL: Record<Compartment, string> = {
+  EXTERNAL: 'Recruitment bot',
+  INTERNAL: 'Employee bot',
+}
+
+const CHANNEL_LABEL: Record<string, string> = {
+  TELEGRAM_EXTERNAL: 'Recruitment bot',
+  TELEGRAM_INTERNAL: 'Employee bot',
+  WEB: 'Dashboard',
+  DASHBOARD: 'Dashboard',
+}
+
+/**
+ * "Who is this for?" — one choice that sets audience, classification and the
+ * linked-account requirement together, so the author never has to reason about
+ * the rule that a candidate-reachable answer must be PUBLIC.
+ */
+type Reach = 'CANDIDATES' | 'EVERYONE' | 'ALL_STAFF' | 'LINKED' | 'HR' | 'HR_ADMIN'
+
+interface ReachOption {
+  key: Reach
+  label: string
+  audience: Audience
+  classification: Classification
+  requiresAccount: boolean
+}
+
+const REACH_OPTIONS: ReachOption[] = [
+  {
+    key: 'CANDIDATES',
+    label: 'Candidates and the public',
+    audience: 'EXTERNAL',
+    classification: 'PUBLIC',
+    requiresAccount: false,
+  },
+  {
+    key: 'EVERYONE',
+    label: 'Everyone — candidates and staff',
+    audience: 'BOTH',
+    classification: 'PUBLIC',
+    requiresAccount: false,
+  },
+  {
+    key: 'ALL_STAFF',
+    label: 'All staff, even before they link Telegram',
+    audience: 'INTERNAL',
+    classification: 'PUBLIC',
+    requiresAccount: false,
+  },
+  {
+    key: 'LINKED',
+    label: 'Linked employees',
+    audience: 'INTERNAL',
+    classification: 'INTERNAL',
+    requiresAccount: true,
+  },
+  {
+    key: 'HR',
+    label: 'HR only',
+    audience: 'INTERNAL',
+    classification: 'CONFIDENTIAL',
+    requiresAccount: true,
+  },
+  {
+    key: 'HR_ADMIN',
+    label: 'HR administrators only',
+    audience: 'INTERNAL',
+    classification: 'RESTRICTED',
+    requiresAccount: true,
+  },
+]
+
+function reachOption(key: Reach): ReachOption {
+  return REACH_OPTIONS.find((option) => option.key === key) ?? REACH_OPTIONS[3]!
+}
+
+/** The closest "Who is this for?" choice for a stored answer. */
+function reachOf(
+  answer: Pick<CuratedAnswer, 'audience' | 'classification' | 'requiresAccount'>,
+): Reach {
+  const exact = REACH_OPTIONS.find(
+    (option) =>
+      option.audience === answer.audience &&
+      option.classification === answer.classification &&
+      option.requiresAccount === answer.requiresAccount,
+  )
+  if (exact) return exact.key
+  if (answer.audience === 'EXTERNAL') return 'CANDIDATES'
+  if (answer.audience === 'BOTH') return 'EVERYONE'
+  if (answer.classification === 'RESTRICTED') return 'HR_ADMIN'
+  if (answer.classification === 'CONFIDENTIAL') return 'HR'
+  if (answer.classification === 'PUBLIC' && !answer.requiresAccount) return 'ALL_STAFF'
+  return 'LINKED'
+}
+
+const FIELD_LABEL: Record<string, string> = {
+  question: 'Question',
+  answer: 'Answer',
+  audience: 'Who is this for?',
+  classification: 'Who is this for?',
+  requiresAccount: 'Who is this for?',
+  phrases: 'Other ways people ask this',
+  category: 'Category',
+  command: 'Telegram command',
+  commandDescription: 'Menu description',
+  effectiveFrom: 'Effective from',
+  effectiveTo: 'Effective to',
+}
+
+interface FieldIssue {
+  field: string
+  message: string
+}
+
+/** Per-field validation issues, when the API supplied them. */
+function issuesOf(error: unknown): FieldIssue[] {
+  if (!(error instanceof ApiRequestError)) return []
+  const issues = error.error.details?.issues
+  if (!Array.isArray(issues)) return []
+  return issues.filter(
+    (issue): issue is FieldIssue =>
+      typeof issue === 'object' &&
+      issue !== null &&
+      typeof (issue as FieldIssue).field === 'string' &&
+      typeof (issue as FieldIssue).message === 'string',
+  )
+}
+
 const PAGE_SIZE = 20
 const MAX_PHRASES = 20
 
-const AUDIENCE_HINT: Record<Audience, string> = {
-  EXTERNAL: 'Public recruitment bot only. Anyone can read it, so it must be PUBLIC.',
-  INTERNAL: 'Verified employees only, filtered further by classification.',
-  BOTH: 'Served by both bots. Must be PUBLIC, because candidates can reach it.',
-}
-
-const emptyDraft = (): DraftState => ({
-  id: null,
-  question: '',
-  answer: '',
-  category: 'GENERAL',
-  audience: 'INTERNAL',
-  classification: 'INTERNAL',
-  status: 'DRAFT',
-  requiresAccount: true,
-  command: '',
-  commandDescription: '',
-  phrases: '',
-  effectiveFrom: '',
-  effectiveTo: '',
-  sourceUnansweredId: null,
-})
-
-interface DraftState {
-  id: string | null
-  question: string
-  answer: string
-  category: string
-  audience: Audience
-  classification: Classification
-  status: Status
-  requiresAccount: boolean
-  command: string
-  commandDescription: string
-  /** One phrasing per line — the plainest editor for a short list. */
-  phrases: string
-  effectiveFrom: string
-  effectiveTo: string
-  sourceUnansweredId: string | null
-}
-
-const cellStyle: CSSProperties = { verticalAlign: 'top' }
-
-const matchStyle: CSSProperties = {
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius)',
-  background: 'var(--surface-alt)',
-  padding: '10px 12px',
-  marginBottom: 8,
-}
-
-function messageOf(error: unknown): string {
-  if (error instanceof ApiRequestError) return error.error.message
-  if (error instanceof Error) return error.message
-  return 'Something went wrong.'
-}
-
-function reachesExternal(audience: Audience): boolean {
-  return audience === 'EXTERNAL' || audience === 'BOTH'
+/** Trails the input by `delay` so the list is not refetched on every keystroke. */
+function useDebounced<T>(value: T, delay = 300): T {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay)
+    return () => clearTimeout(timer)
+  }, [value, delay])
+  return debounced
 }
 
 function phraseLines(value: string): string[] {
@@ -168,797 +293,806 @@ function phraseLines(value: string): string[] {
     .filter(Boolean)
 }
 
-export default function TrainingPage() {
+// --- Editor state ----------------------------------------------------------
+
+interface Draft {
+  /** Null for a new answer. */
+  id: string | null
+  /** The stored status of an existing answer; null for a new one. */
+  status: Status | null
+  question: string
+  answer: string
+  reach: Reach
+  /** One phrasing per line — the plainest editor for a short list. */
+  phrases: string
+  category: string
+  command: string
+  commandDescription: string
+  effectiveFrom: string
+  effectiveTo: string
+  sourceUnansweredId: string | null
+}
+
+function blankDraft(overrides: Partial<Draft> = {}): Draft {
+  return {
+    id: null,
+    status: null,
+    question: '',
+    answer: '',
+    reach: 'LINKED',
+    phrases: '',
+    category: 'GENERAL',
+    command: '',
+    commandDescription: '',
+    effectiveFrom: '',
+    effectiveTo: '',
+    sourceUnansweredId: null,
+    ...overrides,
+  }
+}
+
+function draftOf(answer: CuratedAnswer): Draft {
+  return {
+    id: answer.id,
+    status: answer.status,
+    question: answer.question,
+    answer: answer.answer,
+    reach: reachOf(answer),
+    phrases: answer.phrases.join('\n'),
+    category: answer.category,
+    command: answer.command ?? '',
+    commandDescription: answer.commandDescription ?? '',
+    effectiveFrom: answer.effectiveFrom,
+    effectiveTo: answer.effectiveTo ?? '',
+    sourceUnansweredId: answer.sourceUnansweredId,
+  }
+}
+
+interface Editor {
+  draft: Draft
+  /** Serialised draft as opened, to detect unsaved changes. */
+  baseline: string
+  /** Outcome of the last save, shown inside the panel until the next edit. */
+  notice: string | null
+}
+
+function openEditor(draft: Draft, notice: string | null = null): Editor {
+  return { draft, baseline: JSON.stringify(draft), notice }
+}
+
+// --- Page -----------------------------------------------------------------
+
+export default function BotAnswersPage() {
   const { user } = useSession()
   const mayManage = can(user, 'faq.manage')
 
+  const [tab, setTab] = useState<Tab>('answers')
+
+  // Answers list
+  const [searchInput, setSearchInput] = useState('')
+  const search = useDebounced(searchInput.trim())
   const [audienceFilter, setAudienceFilter] = useState<Audience | ''>('')
   const [statusFilter, setStatusFilter] = useState<Status | ''>('')
-  const [search, setSearch] = useState('')
-  const [page, setPage] = useState(0)
+  const [offset, setOffset] = useState(0)
+  const [editor, setEditor] = useState<Editor | null>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+
+  // Backlog
+  const [backlogOffset, setBacklogOffset] = useState(0)
 
   const listPath = useMemo(() => {
-    const params = new URLSearchParams({
-      limit: String(PAGE_SIZE),
-      offset: String(page * PAGE_SIZE),
-    })
+    const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) })
     if (audienceFilter) params.set('audience', audienceFilter)
     if (statusFilter) params.set('status', statusFilter)
-    if (search.trim()) params.set('q', search.trim())
+    if (search) params.set('q', search)
     return `/knowledge/answers?${params.toString()}`
-  }, [audienceFilter, statusFilter, search, page])
+  }, [audienceFilter, statusFilter, search, offset])
 
   const answers = useApi<Page<CuratedAnswer>>(mayManage ? listPath : null)
   const backlog = useApi<Page<UnansweredQuestion>>(
-    mayManage ? `/knowledge/answers/unanswered?resolved=false&limit=10&offset=0` : null,
+    mayManage
+      ? `/knowledge/answers/unanswered?resolved=false&limit=${PAGE_SIZE}&offset=${backlogOffset}`
+      : null,
   )
 
-  const [draft, setDraft] = useState<DraftState>(emptyDraft)
-  const [submitting, setSubmitting] = useState(false)
-  const [submitError, setSubmitError] = useState<unknown>(null)
-  const [notice, setNotice] = useState<string | null>(null)
-  /** Set when the last save produced something the bots will not serve yet. */
-  const [unpublished, setUnpublished] = useState<CuratedAnswer | null>(null)
-  const setActionErrorFromSync = setSubmitError
+  const selectedId = editor?.draft.id ?? null
+  const openedKey = editor?.baseline ?? null
 
-  const reloadAll = useCallback(() => {
-    answers.reload()
-    backlog.reload()
-  }, [answers, backlog])
-
-  const startNew = useCallback(() => {
-    setDraft(emptyDraft())
-    setSubmitError(null)
-    setNotice(null)
-  }, [])
-
-  const editAnswer = useCallback((answer: CuratedAnswer) => {
-    setDraft({
-      id: answer.id,
-      question: answer.question,
-      answer: answer.answer,
-      category: answer.category,
-      audience: answer.audience,
-      classification: answer.classification,
-      status: answer.status,
-      requiresAccount: answer.requiresAccount,
-      command: answer.command ?? '',
-      commandDescription: answer.commandDescription ?? '',
-      phrases: answer.phrases.join('\n'),
-      effectiveFrom: answer.effectiveFrom,
-      effectiveTo: answer.effectiveTo ?? '',
-      sourceUnansweredId: answer.sourceUnansweredId,
-    })
-    setSubmitError(null)
-    setNotice(null)
-  }, [])
-
-  const trainFromBacklog = useCallback((question: UnansweredQuestion) => {
-    setDraft({
-      ...emptyDraft(),
-      question: question.question.slice(0, 300),
-      // A question that reached the external bot must be answerable publicly.
-      audience: question.channel === 'TELEGRAM_EXTERNAL' ? 'EXTERNAL' : 'INTERNAL',
-      classification: question.channel === 'TELEGRAM_EXTERNAL' ? 'PUBLIC' : 'INTERNAL',
-      requiresAccount: question.channel !== 'TELEGRAM_EXTERNAL',
-      sourceUnansweredId: question.id,
-    })
-    setSubmitError(null)
-    setNotice(null)
-  }, [])
-
-  const classificationConflict =
-    (reachesExternal(draft.audience) && draft.classification !== 'PUBLIC') ||
-    (!draft.requiresAccount && draft.classification !== 'PUBLIC')
-
-  async function submit(event: FormEvent) {
-    event.preventDefault()
-    if (classificationConflict) return
-    setSubmitting(true)
-    setSubmitError(null)
-    setNotice(null)
-    setUnpublished(null)
-
-    const body: Record<string, unknown> = {
-      question: draft.question.trim(),
-      answer: draft.answer.trim(),
-      category: draft.category.trim() || 'GENERAL',
-      audience: draft.audience,
-      classification: draft.classification,
-      status: draft.status,
-      requiresAccount: draft.requiresAccount,
-      phrases: phraseLines(draft.phrases).slice(0, MAX_PHRASES),
+  // On a narrow screen the editor sits below the list; bring it into view when
+  // a draft is opened (the baseline only changes then, not on each keystroke).
+  useEffect(() => {
+    if (openedKey === null) return
+    if (typeof window !== 'undefined' && window.innerWidth < 1200) {
+      panelRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
     }
-    if (draft.command.trim()) {
-      body.command = draft.command.trim().replace(/^\//, '')
-      body.commandDescription = draft.commandDescription.trim()
-    } else {
-      body.command = ''
-    }
-    if (draft.effectiveFrom) body.effectiveFrom = draft.effectiveFrom
-    if (draft.effectiveTo) body.effectiveTo = draft.effectiveTo
-    if (!draft.id && draft.sourceUnansweredId) body.sourceUnansweredId = draft.sourceUnansweredId
+  }, [openedKey])
 
-    try {
-      const saved = await api<{ answer: CuratedAnswer }>(
-        draft.id ? `/knowledge/answers/${draft.id}` : '/knowledge/answers',
-        { method: draft.id ? 'PUT' : 'POST', body },
-      )
+  const dirty = editor !== null && JSON.stringify(editor.draft) !== editor.baseline
 
-      // Closing the backlog item is a second call: the answer must exist before
-      // anything can point at it.
-      if (!draft.id && draft.sourceUnansweredId) {
-        await api(`/knowledge/answers/unanswered/${draft.sourceUnansweredId}/resolve`, {
-          method: 'POST',
-          body: { answerId: saved.answer.id },
-        })
-      }
-
-      const live = saved.answer.status === 'ACTIVE'
-      setNotice(
-        live
-          ? `Saved and live. The ${saved.answer.audience.toLowerCase()} bot will answer with this now.`
-          : `Saved as ${saved.answer.status}. The bots will NOT answer with it until it is published.`,
-      )
-      setUnpublished(live ? null : saved.answer)
-      setDraft(emptyDraft())
-      reloadAll()
-    } catch (e) {
-      setSubmitError(e)
-    } finally {
-      setSubmitting(false)
-    }
+  /** Replace the editor, asking first if the current one has unsaved changes. */
+  function replaceEditor(draft: Draft | null): boolean {
+    if (dirty && !window.confirm('Discard your unsaved changes?')) return false
+    setEditor(draft ? openEditor(draft) : null)
+    return true
   }
 
-  async function changeStatus(answer: CuratedAnswer, status: Status) {
-    setSubmitError(null)
-    setNotice(null)
-    try {
-      await api(`/knowledge/answers/${answer.id}/status`, { method: 'POST', body: { status } })
-      setNotice(
-        status === 'ACTIVE'
-          ? `"${answer.question}" is live. The bots will answer with it now.`
-          : `"${answer.question}" is now ${status}.`,
-      )
-      setUnpublished(null)
-      reloadAll()
-    } catch (e) {
-      setSubmitError(e)
-    }
+  function resetForFilter() {
+    setOffset(0)
+    if (editor && !dirty) setEditor(null)
+  }
+
+  function clearFilters() {
+    setSearchInput('')
+    setAudienceFilter('')
+    setStatusFilter('')
+    resetForFilter()
+  }
+
+  function startAnswerFor(question: string, source: UnansweredQuestion | null, bot: Compartment) {
+    const opened = replaceEditor(
+      blankDraft({
+        question: question.slice(0, 300),
+        reach: bot === 'EXTERNAL' ? 'CANDIDATES' : 'LINKED',
+        sourceUnansweredId: source?.id ?? null,
+      }),
+    )
+    if (opened) setTab('answers')
   }
 
   if (!mayManage) {
     return (
       <Shell>
-        <PageHeader
-          title="Bot training"
-          description="Curated answers for the recruitment and employee Telegram bots."
-        />
+        <PageHeader title="Bot answers" />
         <Card>
-          <Empty
-            title="You do not have access to bot training"
-            hint="This area needs the faq.manage permission. Ask an HR administrator."
-          />
+          <Empty title="You do not have access to bot answers" hint="Ask an HR administrator." />
         </Card>
       </Shell>
     )
   }
 
+  const filtered = Boolean(searchInput || audienceFilter || statusFilter)
+  const page = answers.data
+
   return (
     <Shell>
       <PageHeader
-        title="Bot training"
-        description="Question and answer pairs the Telegram bots serve verbatim, with no model involved."
+        title="Bot answers"
+        description="Questions the Telegram bots answer directly, without a model."
         actions={
-          <button type="button" className="primary" onClick={startNew}>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => {
+              if (replaceEditor(blankDraft())) setTab('answers')
+            }}
+          >
             New answer
           </button>
         }
       />
 
-      {notice ? (
-        <div
-          className={unpublished ? 'notice warn' : 'notice ok'}
-          role="status"
-          style={{ marginBottom: 14 }}
-        >
-          {notice}
-          {unpublished ? (
-            <>
-              {' '}
-              <button
-                type="button"
-                className="primary"
-                style={{ marginLeft: 8 }}
-                onClick={() => changeStatus(unpublished, 'ACTIVE')}
+      <Tabs<Tab>
+        label="Bot answers"
+        value={tab}
+        onChange={setTab}
+        tabs={[
+          { key: 'answers', label: 'Answers' },
+          { key: 'unanswered', label: 'Unanswered questions', count: backlog.data?.total },
+          { key: 'test', label: 'Test the bot' },
+          { key: 'commands', label: 'Command menus' },
+        ]}
+      />
+
+      {tab === 'answers' ? (
+        <div className="split">
+          <Card title="Answers">
+            <div className="toolbar" role="search">
+              <label htmlFor="filter-q" className="visually-hidden">
+                Search
+              </label>
+              <input
+                id="filter-q"
+                type="search"
+                placeholder="Search questions and answers"
+                value={searchInput}
+                maxLength={200}
+                onChange={(e) => {
+                  setSearchInput(e.target.value)
+                  resetForFilter()
+                }}
+              />
+              <label htmlFor="filter-audience" className="visually-hidden">
+                For
+              </label>
+              <select
+                id="filter-audience"
+                value={audienceFilter}
+                onChange={(e) => {
+                  setAudienceFilter(e.target.value as Audience | '')
+                  resetForFilter()
+                }}
               >
-                Publish it now
-              </button>
-            </>
-          ) : null}
+                <option value="">Any bot</option>
+                {AUDIENCES.map((a) => (
+                  <option key={a} value={a}>
+                    {AUDIENCE_LABEL[a]}
+                  </option>
+                ))}
+              </select>
+              <label htmlFor="filter-status" className="visually-hidden">
+                Status
+              </label>
+              <select
+                id="filter-status"
+                value={statusFilter}
+                onChange={(e) => {
+                  setStatusFilter(e.target.value as Status | '')
+                  resetForFilter()
+                }}
+              >
+                <option value="">All statuses</option>
+                {STATUSES.map((s) => (
+                  <option key={s} value={s}>
+                    {STATUS_LABEL[s]}
+                  </option>
+                ))}
+              </select>
+              {filtered ? (
+                <button type="button" onClick={clearFilters}>
+                  Clear
+                </button>
+              ) : null}
+            </div>
+
+            {answers.loading ? (
+              <Loading rows={5} label="Loading answers" />
+            ) : answers.error ? (
+              <ErrorState error={answers.error} />
+            ) : !page || page.items.length === 0 ? (
+              <Empty
+                title="No answers to show"
+                hint={
+                  filtered
+                    ? 'Try clearing the filters.'
+                    : 'Add an answer, or start from a question in the Unanswered questions tab.'
+                }
+              />
+            ) : (
+              <>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th scope="col">Question</th>
+                        <th scope="col">For</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Updated</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {page.items.map((answer) => {
+                        const selected = answer.id === selectedId
+                        const open = () => {
+                          if (selected) return
+                          replaceEditor(draftOf(answer))
+                        }
+                        return (
+                          <tr
+                            key={answer.id}
+                            className="selectable"
+                            aria-selected={selected}
+                            onClick={open}
+                          >
+                            <td>
+                              <button
+                                type="button"
+                                className="link"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  open()
+                                }}
+                              >
+                                {answer.question}
+                              </button>
+                            </td>
+                            <td>
+                              <Badge
+                                value={AUDIENCE_LABEL[answer.audience]}
+                                tone={AUDIENCE_TONE[answer.audience]}
+                              />
+                            </td>
+                            <td>
+                              <Badge
+                                value={STATUS_LABEL[answer.status]}
+                                tone={STATUS_TONE[answer.status]}
+                              />
+                            </td>
+                            <td>{formatDateTime(answer.updatedAt)}</td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <Pager page={page} onChange={setOffset} />
+              </>
+            )}
+          </Card>
+
+          <div ref={panelRef}>
+            {editor ? (
+              <AnswerPanel
+                key={editor.draft.id ?? 'new'}
+                editor={editor}
+                onChange={(draft) => setEditor({ draft, baseline: editor.baseline, notice: null })}
+                onSaved={(saved, notice) => {
+                  setEditor(openEditor(draftOf(saved), notice))
+                  answers.reload()
+                  backlog.reload()
+                }}
+                onArchived={() => {
+                  setEditor(null)
+                  answers.reload()
+                }}
+                onCancel={() => replaceEditor(null)}
+              />
+            ) : (
+              <Card title="Answer">
+                <Empty
+                  title="Select an answer"
+                  hint="Choose an answer from the list to edit it, or add a new one."
+                />
+              </Card>
+            )}
+          </div>
         </div>
       ) : null}
-      {submitError ? (
-        submitError instanceof ApiRequestError && submitError.isForbidden ? (
-          <ErrorState error={submitError} />
-        ) : (
-          <div className="notice error" role="alert" style={{ marginBottom: 14 }}>
-            {messageOf(submitError)}
-          </div>
-        )
+
+      {tab === 'unanswered' ? (
+        <UnansweredCard
+          backlog={backlog}
+          onPage={setBacklogOffset}
+          onAnswer={(item) =>
+            startAnswerFor(
+              item.question,
+              item,
+              item.channel === 'TELEGRAM_EXTERNAL' ? 'EXTERNAL' : 'INTERNAL',
+            )
+          }
+        />
       ) : null}
 
-      <div className="grid two" style={{ marginBottom: 14 }}>
-        <AnswerForm
-          draft={draft}
-          setDraft={setDraft}
-          submitting={submitting}
-          conflict={classificationConflict}
-          onSubmit={submit}
-        />
-        <PreviewPanel />
-      </div>
+      {tab === 'test' ? (
+        <TestBotCard onWriteAnswer={(question, bot) => startAnswerFor(question, null, bot)} />
+      ) : null}
 
-      <CommandMenuCard onError={setActionErrorFromSync} onNotice={setNotice} />
-
-      <Card title="Training backlog">
-        <p className="hint" style={{ marginTop: 0 }}>
-          Questions a bot could not answer from approved material.
-        </p>
-        {backlog.loading ? (
-          <Loading rows={3} label="Loading unanswered questions" />
-        ) : backlog.error ? (
-          <ErrorState error={backlog.error} />
-        ) : !backlog.data || backlog.data.items.length === 0 ? (
-          <Empty
-            title="Nothing unanswered"
-            hint="When a bot cannot answer from approved material, the question is recorded here."
-          />
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Question</th>
-                  <th>Channel</th>
-                  <th>Asked</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {backlog.data.items.map((item) => (
-                  <tr key={item.id}>
-                    <td style={cellStyle}>{item.question}</td>
-                    <td style={cellStyle}>
-                      <Badge value={item.channel} />
-                    </td>
-                    <td style={cellStyle}>{formatDateTime(item.createdAt)}</td>
-                    <td style={cellStyle}>
-                      <button type="button" onClick={() => trainFromBacklog(item)}>
-                        Answer this
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
-
-      <Card title="Curated answers">
-        <form
-          className="toolbar"
-          aria-label="Filter answers"
-          onSubmit={(e) => {
-            e.preventDefault()
-            setPage(0)
-            answers.reload()
-          }}
-        >
-          <label htmlFor="filter-audience" className="visually-hidden">
-            Audience
-          </label>
-          <select
-            id="filter-audience"
-            value={audienceFilter}
-            onChange={(e) => {
-              setAudienceFilter(e.target.value as Audience | '')
-              setPage(0)
-            }}
-          >
-            <option value="">All audiences</option>
-            {AUDIENCES.map((a) => (
-              <option key={a} value={a}>
-                {a}
-              </option>
-            ))}
-          </select>
-
-          <label htmlFor="filter-status" className="visually-hidden">
-            Status
-          </label>
-          <select
-            id="filter-status"
-            value={statusFilter}
-            onChange={(e) => {
-              setStatusFilter(e.target.value as Status | '')
-              setPage(0)
-            }}
-          >
-            <option value="">All statuses</option>
-            {STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-
-          <label htmlFor="filter-q" className="visually-hidden">
-            Search
-          </label>
-          <input
-            id="filter-q"
-            value={search}
-            placeholder="Search questions and answers"
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <button type="submit">Apply</button>
-        </form>
-
-        {answers.loading ? (
-          <Loading rows={4} label="Loading answers" />
-        ) : answers.error ? (
-          <ErrorState error={answers.error} />
-        ) : !answers.data || answers.data.items.length === 0 ? (
-          <Empty
-            title="No curated answers yet"
-            hint="Add one above, or pick a question from the training backlog."
-          />
-        ) : (
-          <>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Question</th>
-                    <th>Audience</th>
-                    <th>Classification</th>
-                    <th>Account</th>
-                    <th>Status</th>
-                    <th>Command</th>
-                    <th>Phrasings</th>
-                    <th>Updated</th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {answers.data.items.map((answer) => (
-                    <tr key={answer.id}>
-                      <td style={cellStyle}>{answer.question}</td>
-                      <td style={cellStyle}>
-                        <Badge value={answer.audience} />
-                      </td>
-                      <td style={cellStyle}>
-                        <Badge value={answer.classification} />
-                      </td>
-                      <td style={cellStyle}>
-                        <Badge value={answer.requiresAccount ? 'REQUIRED' : 'NOT NEEDED'} />
-                      </td>
-                      <td style={cellStyle}>
-                        <Badge value={answer.status} />
-                      </td>
-                      <td style={cellStyle}>
-                        {answer.command ? (
-                          <>
-                            <span className="mono">/{answer.command}</span>
-                            {answer.classification !== 'PUBLIC' ? (
-                              <div className="hint">not listed</div>
-                            ) : null}
-                          </>
-                        ) : (
-                          <span className="hint">—</span>
-                        )}
-                      </td>
-                      <td style={cellStyle}>{answer.phrases.length}</td>
-                      <td style={cellStyle}>{formatDateTime(answer.updatedAt)}</td>
-                      <td style={cellStyle}>
-                        <div className="toolbar" style={{ marginBottom: 0 }}>
-                          <button type="button" onClick={() => editAnswer(answer)}>
-                            Edit
-                          </button>
-                          {answer.status === 'DRAFT' ? (
-                            <button type="button" onClick={() => changeStatus(answer, 'ACTIVE')}>
-                              Publish
-                            </button>
-                          ) : null}
-                          {answer.status !== 'ARCHIVED' ? (
-                            <button type="button" onClick={() => changeStatus(answer, 'ARCHIVED')}>
-                              Archive
-                            </button>
-                          ) : null}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="toolbar" style={{ marginTop: 12, marginBottom: 0 }}>
-              <button type="button" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
-                Previous
-              </button>
-              <span className="hint">
-                {answers.data.total} answer(s) — page {page + 1}
-              </span>
-              <button
-                type="button"
-                disabled={(page + 1) * PAGE_SIZE >= answers.data.total}
-                onClick={() => setPage((p) => p + 1)}
-              >
-                Next
-              </button>
-            </div>
-          </>
-        )}
-      </Card>
+      {tab === 'commands' ? <CommandMenus /> : null}
     </Shell>
   )
 }
 
-function AnswerForm({
-  draft,
-  setDraft,
-  submitting,
-  conflict,
-  onSubmit,
+// --- Answer panel (actions first, then the form) ---------------------------
+
+function AnswerPanel({
+  editor,
+  onChange,
+  onSaved,
+  onArchived,
+  onCancel,
 }: {
-  draft: DraftState
-  setDraft: (next: DraftState) => void
-  submitting: boolean
-  conflict: boolean
-  onSubmit(event: FormEvent): void
+  editor: Editor
+  onChange(draft: Draft): void
+  onSaved(answer: CuratedAnswer, notice: string): void
+  onArchived(): void
+  onCancel(): void
 }) {
-  const phrases = phraseLines(draft.phrases)
+  const { draft, notice } = editor
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<unknown>(null)
+  const [localIssue, setLocalIssue] = useState<string | null>(null)
+
+  const isNew = draft.id === null
+  const reach = reachOption(draft.reach)
+
+  function set<K extends keyof Draft>(key: K, value: Draft[K]) {
+    onChange({ ...draft, [key]: value })
+  }
+
+  function buildBody(status: Status | null): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+      question: draft.question.trim(),
+      answer: draft.answer.trim(),
+      category: draft.category.trim() || 'GENERAL',
+      audience: reach.audience,
+      classification: reach.classification,
+      requiresAccount: reach.requiresAccount,
+      phrases: phraseLines(draft.phrases).slice(0, MAX_PHRASES),
+    }
+    if (status) body.status = status
+    if (draft.command.trim()) {
+      body.command = draft.command.trim().replace(/^\//, '')
+      body.commandDescription = draft.commandDescription.trim()
+    }
+    if (draft.effectiveFrom) body.effectiveFrom = draft.effectiveFrom
+    if (draft.effectiveTo) body.effectiveTo = draft.effectiveTo
+    if (isNew && draft.sourceUnansweredId) body.sourceUnansweredId = draft.sourceUnansweredId
+    return body
+  }
+
+  async function save(status: Status | null) {
+    setError(null)
+    setLocalIssue(null)
+
+    if (draft.command.trim() && !draft.commandDescription.trim()) {
+      setLocalIssue('A Telegram command needs a menu description.')
+      return
+    }
+
+    setSubmitting(true)
+    try {
+      const saved = await api<{ answer: CuratedAnswer }>(
+        isNew ? '/knowledge/answers' : `/knowledge/answers/${draft.id}`,
+        { method: isNew ? 'POST' : 'PUT', body: buildBody(status) },
+      )
+      // Closing the backlog item is a second call: the answer must exist
+      // before anything can point at it.
+      if (isNew && draft.sourceUnansweredId) {
+        await api(`/knowledge/answers/unanswered/${draft.sourceUnansweredId}/resolve`, {
+          method: 'POST',
+          body: { answerId: saved.answer.id },
+        })
+      }
+      onSaved(
+        saved.answer,
+        saved.answer.status === 'ACTIVE'
+          ? isNew
+            ? 'Saved and published. The bot will use it now.'
+            : 'Changes saved. The bot is using them now.'
+          : isNew
+            ? 'Saved as a draft. The bot will not use it until you publish it.'
+            : 'Changes saved.',
+      )
+    } catch (e) {
+      setError(e)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function changeStatus(next: 'ACTIVE' | 'ARCHIVED') {
+    if (!draft.id) return
+    const question =
+      next === 'ACTIVE'
+        ? 'Publish this answer? The bot will start using it immediately.'
+        : 'Archive this answer? It cannot be restored.'
+    if (!window.confirm(question)) return
+
+    setError(null)
+    setSubmitting(true)
+    try {
+      const result = await api<{ answer: CuratedAnswer }>(`/knowledge/answers/${draft.id}/status`, {
+        method: 'POST',
+        body: { status: next },
+      })
+      if (next === 'ARCHIVED') {
+        onArchived()
+        return
+      }
+      onSaved(result.answer, 'Published. The bot will use it now.')
+    } catch (e) {
+      setError(e)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  function onSubmit(event: FormEvent) {
+    event.preventDefault()
+    // A new answer is saved as a draft by default; the second button publishes.
+    void save(isNew ? 'DRAFT' : null)
+  }
+
+  const issues = issuesOf(error)
+  const commandSet = draft.command.trim().length > 0
 
   return (
-    <Card title={draft.id ? 'Edit answer' : 'New answer'}>
-      <form onSubmit={onSubmit} aria-label="Curated answer">
-        <div className="field">
-          <label htmlFor="answer-question">Question</label>
-          <input
-            id="answer-question"
-            value={draft.question}
-            maxLength={300}
-            required
-            onChange={(e) => setDraft({ ...draft, question: e.target.value })}
-          />
-          <div className="hint">The canonical wording. Alternatives go in the phrasings box.</div>
-        </div>
-
-        <div className="field">
-          <label htmlFor="answer-body">Answer</label>
-          <textarea
-            id="answer-body"
-            value={draft.answer}
-            rows={5}
-            maxLength={4000}
-            required
-            onChange={(e) => setDraft({ ...draft, answer: e.target.value })}
-          />
-          <div className="hint">
-            Served word for word. The bot will not rephrase it or add to it.
-          </div>
-        </div>
-
-        <div className="field">
-          <label htmlFor="answer-phrases">Training phrasings ({phrases.length}/{MAX_PHRASES})</label>
-          <textarea
-            id="answer-phrases"
-            value={draft.phrases}
-            rows={4}
-            placeholder={'how do I apply\nwhere do I send my CV'}
-            onChange={(e) => setDraft({ ...draft, phrases: e.target.value })}
-          />
-          <div className="hint">
-            One per line. A way of asking that is not listed is a way the bot will not recognise.
-          </div>
-        </div>
-
-        <div className="form-row">
-          <div className="field">
-            <label htmlFor="answer-audience">Audience</label>
-            <select
-              id="answer-audience"
-              value={draft.audience}
-              onChange={(e) => {
-                const audience = e.target.value as Audience
-                setDraft({
-                  ...draft,
-                  audience,
-                  // Steer to the only legal choice rather than letting the save fail.
-                  classification: reachesExternal(audience) ? 'PUBLIC' : draft.classification,
-                })
-              }}
-            >
-              {AUDIENCES.map((a) => (
-                <option key={a} value={a}>
-                  {a}
-                </option>
-              ))}
-            </select>
-            <div className="hint">{AUDIENCE_HINT[draft.audience]}</div>
-          </div>
-
-          <div className="field">
-            <label htmlFor="answer-classification">Classification</label>
-            <select
-              id="answer-classification"
-              value={draft.classification}
-              disabled={reachesExternal(draft.audience)}
-              onChange={(e) =>
-                setDraft({ ...draft, classification: e.target.value as Classification })
-              }
-            >
-              {CLASSIFICATIONS.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-            {conflict ? (
-              <div className="notice error" style={{ marginTop: 8, fontSize: 13 }}>
-                Only a PUBLIC answer can reach the external bot, or someone without a verified
-                account.
-              </div>
+    <Card title={isNew ? 'New answer' : 'Answer'}>
+      <div className="grid">
+        {!isNew && draft.status ? (
+          <div className="actions">
+            <Badge value={STATUS_LABEL[draft.status]} tone={STATUS_TONE[draft.status]} />
+            {draft.status === 'DRAFT' ? (
+              <button
+                type="button"
+                className="primary"
+                disabled={submitting}
+                onClick={() => changeStatus('ACTIVE')}
+              >
+                Publish
+              </button>
+            ) : null}
+            {draft.status !== 'ARCHIVED' ? (
+              <button
+                type="button"
+                className="danger"
+                disabled={submitting}
+                onClick={() => changeStatus('ARCHIVED')}
+              >
+                Archive
+              </button>
             ) : null}
           </div>
-        </div>
-
-        {draft.audience === 'INTERNAL' ? (
-          <div className="field">
-            <label htmlFor="answer-account">
-              <input
-                id="answer-account"
-                type="checkbox"
-                checked={!draft.requiresAccount}
-                disabled={draft.classification !== 'PUBLIC'}
-                onChange={(e) => setDraft({ ...draft, requiresAccount: !e.target.checked })}
-                style={{ marginRight: 8 }}
-              />
-              Answer this without a verified account
-            </label>
-            <div className="hint">
-              {draft.classification === 'PUBLIC'
-                ? 'General staff information — someone messaging the internal bot gets this before linking their account. Leave off for anything personal or credential-bearing.'
-                : 'Only a PUBLIC answer can be given without an account. Reclassify to PUBLIC to enable this.'}
-            </div>
-          </div>
         ) : null}
 
-        <div className="form-row">
-          <div className="field">
-            <label htmlFor="answer-category">Category</label>
+        {notice ? <Notice tone="ok">{notice}</Notice> : null}
+        {localIssue ? <Notice tone="error">{localIssue}</Notice> : null}
+        <SubmitError error={error} />
+        {issues.length > 0 ? (
+          <ul className="small-text">
+            {issues.map((issue, i) => (
+              <li key={`${issue.field}-${i}`}>
+                <strong>{FIELD_LABEL[issue.field] ?? issue.field}:</strong> {issue.message}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+
+        <form onSubmit={onSubmit} aria-label={isNew ? 'New answer' : 'Edit answer'}>
+          <Field id="answer-question" label="Question">
             <input
-              id="answer-category"
-              value={draft.category}
-              maxLength={60}
-              onChange={(e) => setDraft({ ...draft, category: e.target.value })}
+              id="answer-question"
+              required
+              minLength={3}
+              maxLength={300}
+              value={draft.question}
+              onChange={(e) => set('question', e.target.value)}
             />
-          </div>
-          <div className="field">
-            <label htmlFor="answer-status">Status</label>
-            <select
-              id="answer-status"
-              value={draft.status}
-              onChange={(e) => setDraft({ ...draft, status: e.target.value as Status })}
+          </Field>
+
+          <Field
+            id="answer-body"
+            label="Answer"
+            hint="Sent word for word. The bot will not rephrase it."
+          >
+            <textarea
+              id="answer-body"
+              required
+              minLength={3}
+              maxLength={4000}
+              rows={5}
+              value={draft.answer}
+              onChange={(e) => set('answer', e.target.value)}
+            />
+          </Field>
+
+          <fieldset>
+            <legend>Who is this for?</legend>
+            {REACH_OPTIONS.map((option) => (
+              <label key={option.key} className="check" htmlFor={`reach-${option.key}`}>
+                <input
+                  id={`reach-${option.key}`}
+                  type="radio"
+                  name="reach"
+                  value={option.key}
+                  checked={draft.reach === option.key}
+                  onChange={() => set('reach', option.key)}
+                />
+                {option.label}
+              </label>
+            ))}
+          </fieldset>
+
+          <details className="more">
+            <summary>Other ways people ask this</summary>
+            <Field
+              id="answer-phrases"
+              label={`Phrasings (${phraseLines(draft.phrases).length}/${MAX_PHRASES})`}
+              hint="One per line. The bot only recognises a wording that is listed here or close to the question."
             >
-              {STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-            <div className="hint">Only ACTIVE answers are served. Archiving cannot be undone.</div>
-          </div>
-        </div>
+              <textarea
+                id="answer-phrases"
+                rows={4}
+                placeholder={'how do I apply\nwhere do I send my CV'}
+                value={draft.phrases}
+                onChange={(e) => set('phrases', e.target.value)}
+              />
+            </Field>
+          </details>
 
-        <div className="form-row">
-          <div className="field">
-            <label htmlFor="answer-command">Telegram command (optional)</label>
-            <input
-              id="answer-command"
-              value={draft.command}
-              placeholder="benefits"
-              maxLength={33}
-              onChange={(e) => setDraft({ ...draft, command: e.target.value })}
-            />
-            <div className="hint">
-              Lower-case letters, digits and underscores. Running it goes through the same checks as
-              asking the question.
+          <details className="more">
+            <summary>More options</summary>
+            <Field id="answer-category" label="Category">
+              <input
+                id="answer-category"
+                maxLength={60}
+                value={draft.category}
+                onChange={(e) => set('category', e.target.value)}
+              />
+            </Field>
+            <div className="form-row">
+              <Field
+                id="answer-command"
+                label="Telegram command"
+                hint="Lower-case letters, digits and underscores. Optional."
+              >
+                <input
+                  id="answer-command"
+                  maxLength={33}
+                  placeholder="benefits"
+                  value={draft.command}
+                  onChange={(e) => set('command', e.target.value)}
+                />
+              </Field>
+              <Field
+                id="answer-command-description"
+                label="Menu description"
+                hint={
+                  commandSet
+                    ? 'Shown in the bot menu to anyone who opens it. Required with a command.'
+                    : 'Only needed with a command.'
+                }
+              >
+                <input
+                  id="answer-command-description"
+                  maxLength={256}
+                  required={commandSet}
+                  disabled={!commandSet}
+                  value={draft.commandDescription}
+                  onChange={(e) => set('commandDescription', e.target.value)}
+                />
+              </Field>
             </div>
-          </div>
-          <div className="field">
-            <label htmlFor="answer-command-description">Menu description</label>
-            <input
-              id="answer-command-description"
-              value={draft.commandDescription}
-              maxLength={256}
-              disabled={!draft.command.trim()}
-              onChange={(e) => setDraft({ ...draft, commandDescription: e.target.value })}
-            />
-            <div className="hint">
-              {draft.classification === 'PUBLIC'
-                ? 'Shown in the bot menu to anyone who opens it, before they verify. Keep it plain.'
-                : 'This answer is not PUBLIC, so the command works but is never listed in the menu.'}
+            <div className="form-row">
+              <Field id="answer-from" label="Effective from" hint="Leave blank for today.">
+                <input
+                  id="answer-from"
+                  type="date"
+                  value={draft.effectiveFrom}
+                  onChange={(e) => set('effectiveFrom', e.target.value)}
+                />
+              </Field>
+              <Field id="answer-to" label="Effective to" hint="Leave blank for no end date.">
+                <input
+                  id="answer-to"
+                  type="date"
+                  min={draft.effectiveFrom || undefined}
+                  value={draft.effectiveTo}
+                  onChange={(e) => set('effectiveTo', e.target.value)}
+                />
+              </Field>
             </div>
-          </div>
-        </div>
+          </details>
 
-        <div className="form-row">
-          <div className="field">
-            <label htmlFor="answer-from">Effective from</label>
-            <input
-              id="answer-from"
-              type="date"
-              value={draft.effectiveFrom}
-              onChange={(e) => setDraft({ ...draft, effectiveFrom: e.target.value })}
-            />
-            <div className="hint">Defaults to today.</div>
-          </div>
-          <div className="field">
-            <label htmlFor="answer-to">Effective to</label>
-            <input
-              id="answer-to"
-              type="date"
-              value={draft.effectiveTo}
-              onChange={(e) => setDraft({ ...draft, effectiveTo: e.target.value })}
-            />
-            <div className="hint">Leave blank for no end date.</div>
-          </div>
-        </div>
-
-        {draft.sourceUnansweredId ? (
-          <div className="notice info" style={{ marginBottom: 12, fontSize: 13 }}>
-            Saving will also close the backlog question this was started from.
-          </div>
-        ) : null}
-
-        <div className="toolbar" style={{ marginBottom: 0 }}>
-          <button type="submit" className="primary" disabled={submitting || conflict}>
-            {submitting
-              ? 'Saving…'
-              : draft.status === 'ACTIVE'
-                ? draft.id
-                  ? 'Save and keep live'
-                  : 'Create and publish'
-                : draft.id
-                  ? `Save as ${draft.status.toLowerCase()}`
-                  : 'Save as draft'}
-          </button>
-          {draft.status !== 'ACTIVE' ? (
-            <span className="hint">
-              A {draft.status.toLowerCase()} answer is not served by either bot. Set the status to
-              ACTIVE to make it live.
-            </span>
+          {isNew && draft.sourceUnansweredId ? (
+            <Notice tone="info">
+              Saving also closes the unanswered question this started from.
+            </Notice>
           ) : null}
-        </div>
-      </form>
+
+          <div className="form-actions">
+            {isNew ? (
+              <>
+                <button type="submit" disabled={submitting}>
+                  {submitting ? 'Saving…' : 'Save as draft'}
+                </button>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={submitting}
+                  onClick={() => void save('ACTIVE')}
+                >
+                  Save and publish
+                </button>
+              </>
+            ) : (
+              <button type="submit" className="primary" disabled={submitting}>
+                {submitting ? 'Saving…' : 'Save changes'}
+              </button>
+            )}
+            <button type="button" onClick={onCancel} disabled={submitting}>
+              {isNew ? 'Cancel' : 'Close'}
+            </button>
+          </div>
+        </form>
+      </div>
     </Card>
   )
 }
 
-/**
- * The Telegram command menus, and the button that pushes them.
- *
- * Kept visibly separate from saving an answer: publishing a menu changes what
- * everyone who opens the bot can see, so it is a deliberate second action
- * rather than a side effect of editing.
- */
-function CommandMenuCard({
-  onError,
-  onNotice,
-}: {
-  onError(error: unknown): void
-  onNotice(message: string): void
-}) {
-  const menus = useApi<CommandMenusResponse>('/knowledge/answers/commands')
-  const [syncing, setSyncing] = useState(false)
-  const [results, setResults] = useState<SyncResult[] | null>(null)
+// --- Unanswered questions --------------------------------------------------
 
-  async function sync() {
-    setSyncing(true)
-    setResults(null)
+function UnansweredCard({
+  backlog,
+  onPage,
+  onAnswer,
+}: {
+  backlog: ApiState<Page<UnansweredQuestion>>
+  onPage(offset: number): void
+  onAnswer(item: UnansweredQuestion): void
+}) {
+  const [error, setError] = useState<unknown>(null)
+  const [busyId, setBusyId] = useState<string | null>(null)
+
+  async function dismiss(item: UnansweredQuestion) {
+    if (!window.confirm('Dismiss this question? It leaves the list without an answer.')) return
+    setError(null)
+    setBusyId(item.id)
     try {
-      const response = await api<{ results: SyncResult[] }>('/knowledge/answers/commands/sync', {
-        method: 'POST',
-        body: {},
-      })
-      setResults(response.results)
-      const pushed = response.results.filter((r) => r.synced).length
-      onNotice(
-        pushed > 0
-          ? `Command menu pushed to ${pushed} bot(s).`
-          : 'Nothing was pushed — no bot token is configured.',
-      )
-      menus.reload()
+      await api(`/knowledge/answers/unanswered/${item.id}/resolve`, { method: 'POST', body: {} })
+      backlog.reload()
     } catch (e) {
-      onError(e)
+      setError(e)
     } finally {
-      setSyncing(false)
+      setBusyId(null)
     }
   }
 
   return (
-    <Card title="Telegram command menus">
-      {menus.loading ? (
-        <Loading rows={3} label="Loading command menus" />
-      ) : menus.error ? (
-        <ErrorState error={menus.error} />
-      ) : menus.data ? (
+    <Card title="Unanswered questions">
+      <p className="hint">
+        Questions a bot could not answer. Write an answer, or dismiss the ones that do not need one.
+      </p>
+      <SubmitError error={error} />
+      {backlog.loading ? (
+        <Loading rows={3} label="Loading unanswered questions" />
+      ) : backlog.error ? (
+        <ErrorState error={backlog.error} />
+      ) : !backlog.data || backlog.data.items.length === 0 ? (
+        <Empty
+          title="Nothing waiting"
+          hint="When a bot cannot answer a question, it appears here."
+        />
+      ) : (
         <>
-          <div className="notice info" style={{ fontSize: 13 }}>
-            {menus.data.note}
-          </div>
-
-          <div className="grid two">
-            {menus.data.menus.map((menu) => (
-              <div key={menu.compartment}>
-                <h3 style={{ fontSize: 14, margin: '0 0 6px' }}>
-                  {menu.compartment === 'EXTERNAL' ? 'Recruitment bot' : 'Employee bot'}
-                </h3>
-                <p className="hint" style={{ marginTop: 0 }}>
-                  {menu.builtIn.length} built-in · {menu.curated.length} from bot training
-                </p>
-                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                  {menu.effective.map((entry) => (
-                    <li key={entry.command}>
-                      <span className="mono">/{entry.command}</span> — {entry.description}
-                    </li>
-                  ))}
-                </ul>
-                {menu.omitted.length > 0 ? (
-                  <div className="notice warn" style={{ fontSize: 13, marginTop: 8 }}>
-                    {menu.omitted.length} command(s) exceed Telegram's limit and will not be sent.
-                  </div>
-                ) : null}
+          <div className="rows">
+            {backlog.data.items.map((item) => (
+              <div className="row-card" key={item.id}>
+                <div className="row-head">
+                  <strong>{item.question}</strong>
+                </div>
+                <div className="row-meta">
+                  <span>{CHANNEL_LABEL[item.channel] ?? 'Bot'}</span>
+                  <span>Asked {formatDateTime(item.createdAt)}</span>
+                </div>
+                <div className="actions">
+                  <button
+                    type="button"
+                    className="small primary"
+                    disabled={busyId === item.id}
+                    onClick={() => onAnswer(item)}
+                  >
+                    Answer this
+                  </button>
+                  <button
+                    type="button"
+                    className="small"
+                    disabled={busyId === item.id}
+                    onClick={() => dismiss(item)}
+                  >
+                    Dismiss
+                  </button>
+                </div>
               </div>
             ))}
           </div>
-
-          <div className="toolbar" style={{ marginBottom: 0, marginTop: 12 }}>
-            <button type="button" className="primary" disabled={syncing} onClick={sync}>
-              {syncing ? 'Pushing…' : 'Push menus to Telegram'}
-            </button>
-            <span className="hint">Replaces each bot's whole menu.</span>
-          </div>
-
-          {results ? (
-            <ul style={{ marginTop: 10, paddingLeft: 18, fontSize: 13 }}>
-              {results.map((result) => (
-                <li key={result.compartment}>
-                  {result.compartment === 'EXTERNAL' ? 'Recruitment bot' : 'Employee bot'}:{' '}
-                  {!result.configured
-                    ? 'no bot token configured — skipped'
-                    : result.synced
-                      ? `${result.commands.length} command(s) published`
-                      : 'Telegram rejected the update'}
-                </li>
-              ))}
-            </ul>
-          ) : null}
+          <Pager page={backlog.data} onChange={onPage} />
         </>
-      ) : null}
+      )}
     </Card>
   )
 }
 
-/** Dry run against the real retrieval path, so authors can check precision. */
-function PreviewPanel() {
+// --- Test the bot ----------------------------------------------------------
+
+function TestBotCard({
+  onWriteAnswer,
+}: {
+  onWriteAnswer(question: string, bot: Compartment): void
+}) {
   const [question, setQuestion] = useState('')
-  const [audience, setAudience] = useState<'EXTERNAL' | 'INTERNAL'>('EXTERNAL')
+  const [bot, setBot] = useState<Compartment>('EXTERNAL')
   const [result, setResult] = useState<PreviewResponse | null>(null)
+  const [asked, setAsked] = useState<{ question: string; bot: Compartment } | null>(null)
   const [error, setError] = useState<unknown>(null)
   const [running, setRunning] = useState(false)
 
@@ -966,13 +1100,15 @@ function PreviewPanel() {
     event.preventDefault()
     setRunning(true)
     setError(null)
+    const trimmed = question.trim()
     try {
       setResult(
         await api<PreviewResponse>('/knowledge/answers/preview', {
           method: 'POST',
-          body: { question: question.trim(), audience },
+          body: { question: trimmed, audience: bot },
         }),
       )
+      setAsked({ question: trimmed, bot })
     } catch (e) {
       setError(e)
       setResult(null)
@@ -981,71 +1117,196 @@ function PreviewPanel() {
     }
   }
 
+  const served = result?.matches.find((match) => match.wouldServe) ?? null
+
   return (
-    <Card title="Test a bot">
-      <p className="hint" style={{ marginTop: 0 }}>
-        What would the bot reply right now?
-      </p>
-      <form onSubmit={run} aria-label="Preview a bot answer">
-        <div className="field">
-          <label htmlFor="preview-audience">Bot</label>
-          <select
-            id="preview-audience"
-            value={audience}
-            onChange={(e) => setAudience(e.target.value as 'EXTERNAL' | 'INTERNAL')}
+    <Card title="Test the bot">
+      <div className="grid">
+        <form onSubmit={run} aria-label="Test the bot">
+          <Field id="test-bot" label="Bot">
+            <select
+              id="test-bot"
+              value={bot}
+              onChange={(e) => setBot(e.target.value as Compartment)}
+            >
+              <option value="EXTERNAL">{BOT_LABEL.EXTERNAL}</option>
+              <option value="INTERNAL">{BOT_LABEL.INTERNAL}</option>
+            </select>
+          </Field>
+          <Field
+            id="test-question"
+            label="Question"
+            hint="Type it the way someone would in Telegram."
           >
-            <option value="EXTERNAL">External (candidates)</option>
-            <option value="INTERNAL">Internal (employees)</option>
-          </select>
-          <div className="hint">
-            The external preview is capped at PUBLIC, so it shows what a candidate sees.
+            <input
+              id="test-question"
+              required
+              minLength={3}
+              maxLength={500}
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+            />
+          </Field>
+          <div className="form-actions">
+            <button
+              type="submit"
+              className="primary"
+              disabled={running || question.trim().length < 3}
+            >
+              {running ? 'Asking…' : 'Ask'}
+            </button>
           </div>
-        </div>
-        <div className="field">
-          <label htmlFor="preview-question">Question</label>
-          <input
-            id="preview-question"
-            value={question}
-            required
-            minLength={3}
-            maxLength={500}
-            onChange={(e) => setQuestion(e.target.value)}
-          />
-        </div>
-        <div className="toolbar" style={{ marginBottom: 0 }}>
-          <button type="submit" disabled={running || question.trim().length < 3}>
-            {running ? 'Testing…' : 'Test'}
-          </button>
-        </div>
-      </form>
+        </form>
 
-      {error ? <ErrorState error={error} /> : null}
+        {error ? <ErrorState error={error} /> : null}
 
-      {result ? (
-        result.matches.length === 0 ? (
-          <div className="notice info" style={{ marginTop: 12, fontSize: 13 }}>
-            No curated answer matches. The bot would fall back to policy search, or say it does not
-            know and record the question in the backlog.
-          </div>
-        ) : (
-          <div style={{ marginTop: 12 }}>
-            {result.matches.map((match) => (
-              <div key={match.answerId} style={matchStyle}>
-                <div className="toolbar" style={{ marginBottom: 6 }}>
-                  <Badge value={match.wouldServe ? 'WOULD SERVE' : 'BELOW THRESHOLD'} />
-                  <Badge value={match.classification} />
-                  {match.requiresAccount ? <Badge value="ACCOUNT REQUIRED" /> : null}
-                  <span className="hint">
-                    {Math.round(match.coverage * 100)}% of your words matched
-                  </span>
-                </div>
-                <div style={{ fontWeight: 600, marginBottom: 4 }}>{match.question}</div>
-                <div>{match.answer}</div>
+        {result && asked ? (
+          served ? (
+            <div className="rows">
+              <div className="bubble user">{asked.question}</div>
+              <div className="bubble">{served.answer}</div>
+              <div className="bubble-meta">
+                {BOT_LABEL[asked.bot]} · from the answer “{served.question}”
               </div>
-            ))}
-          </div>
-        )
-      ) : null}
+            </div>
+          ) : (
+            <Notice tone="info">
+              <div className="grid">
+                <span>
+                  The bot would not answer this — it would search policies or say it does not know.
+                </span>
+                <div className="actions">
+                  <button type="button" onClick={() => onWriteAnswer(asked.question, asked.bot)}>
+                    Write an answer
+                  </button>
+                </div>
+              </div>
+            </Notice>
+          )
+        ) : null}
+      </div>
     </Card>
+  )
+}
+
+// --- Command menus ---------------------------------------------------------
+
+/**
+ * Pushing a menu changes what everyone who opens the bot can see, so it is a
+ * deliberate action here rather than a side effect of saving an answer.
+ */
+function CommandMenus() {
+  const menus = useApi<CommandMenusResponse>('/knowledge/answers/commands')
+  const [syncing, setSyncing] = useState(false)
+  const [results, setResults] = useState<SyncResult[] | null>(null)
+  const [error, setError] = useState<unknown>(null)
+
+  async function push() {
+    if (
+      !window.confirm(
+        'Push these menus to Telegram? Everyone who opens the bots sees the new menu.',
+      )
+    )
+      return
+    setSyncing(true)
+    setResults(null)
+    setError(null)
+    try {
+      const response = await api<{ results: SyncResult[] }>('/knowledge/answers/commands/sync', {
+        method: 'POST',
+        body: {},
+      })
+      setResults(response.results)
+      menus.reload()
+    } catch (e) {
+      setError(e)
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  function describe(result: SyncResult): string {
+    if (!result.configured) return 'skipped — this bot is not set up yet.'
+    if (!result.synced) return 'Telegram did not accept the update.'
+    const n = result.commands.length
+    return `${n} command${n === 1 ? '' : 's'} published.`
+  }
+
+  return (
+    <div className="grid">
+      {menus.loading ? (
+        <Card title="Command menus">
+          <Loading rows={3} label="Loading command menus" />
+        </Card>
+      ) : menus.error ? (
+        <Card title="Command menus">
+          <ErrorState error={menus.error} />
+        </Card>
+      ) : menus.data ? (
+        <div className="grid two">
+          {menus.data.menus.map((menu) => {
+            const builtIn = new Set(menu.builtIn.map((entry) => entry.command))
+            return (
+              <Card key={menu.compartment} title={BOT_LABEL[menu.compartment]}>
+                {menu.effective.length === 0 ? (
+                  <Empty
+                    title="No commands"
+                    hint="Add a Telegram command to an answer to list it here."
+                  />
+                ) : (
+                  <ul className="small-text">
+                    {menu.effective.map((entry) => (
+                      <li key={entry.command}>
+                        <span className="mono">/{entry.command}</span> — {entry.description}{' '}
+                        {builtIn.has(entry.command) ? (
+                          <Badge value="built in" tone="muted" />
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {menu.omitted.length > 0 ? (
+                  <Notice tone="warn">
+                    {menu.omitted.length} command{menu.omitted.length === 1 ? '' : 's'} do not fit
+                    in Telegram&apos;s menu and will not be sent.
+                  </Notice>
+                ) : null}
+              </Card>
+            )
+          })}
+        </div>
+      ) : null}
+
+      <Card title="Telegram">
+        <div className="grid">
+          <p className="hint">
+            Only answers anyone may read are listed in a menu, because Telegram shows it before a
+            person links their account. A command on any other answer still works for the people
+            allowed to use it.
+          </p>
+          <div className="actions">
+            <button
+              type="button"
+              className="primary"
+              disabled={syncing || menus.loading}
+              onClick={push}
+            >
+              {syncing ? 'Pushing…' : 'Push menus to Telegram'}
+            </button>
+            <span className="hint">Replaces each bot&apos;s whole menu.</span>
+          </div>
+          <SubmitError error={error} />
+          {results ? (
+            <Notice tone="ok">
+              {results.map((result) => (
+                <div key={result.compartment}>
+                  {BOT_LABEL[result.compartment]}: {describe(result)}
+                </div>
+              ))}
+            </Notice>
+          ) : null}
+        </div>
+      </Card>
+    </div>
   )
 }

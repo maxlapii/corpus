@@ -557,7 +557,7 @@ The migration path and its sequencing are described in [docs/roadmap.md](docs/ro
   requirements — a deterministic, evidence-carrying, advisory report with no model involved.
 - Knowledge base: documents, versions with effective dates, chunks with classifications, ingestion
   through extraction and chunking, and classification-filtered search.
-- Bot training: curated question/answer pairs authored in the dashboard and served **verbatim** by
+- Bot answers page: curated question/answer pairs authored in the dashboard and served **verbatim** by
   either Telegram bot, with an audience axis (external / internal / both) on top of the usual
   classification filter, training phrasings, draft-and-publish, effective dates, a per-bot preview,
   a backlog of questions the bots could not answer, and Telegram commands: an answer can be bound to
@@ -569,8 +569,10 @@ The migration path and its sequencing are described in [docs/roadmap.md](docs/ro
   authorised before its handler runs; a response filter; and per-subject rate limits.
 - Two Telegram bots with webhook secret verification, a replay guard, rate limiting, and
   e-mail-plus-one-time-code identity linking.
-- Next.js dashboard: login, dashboard, people, recruitment, leave, knowledge, bot training, reports,
-  security and settings, plus an assistant page.
+- Next.js dashboard: login, a home page with KPIs and the work the bots hand to HR (pending leave,
+  unanswered questions, open HR tickets), people, leave, recruitment and CVs, policies, the
+  Bot answers page (curated answers, unanswered questions, command menus, a reply preview),
+  security and settings. Chat happens on Telegram; the dashboard has no chat page.
 - Audit logs and security events, surfaced to authorised administrators.
 - CI with secret scanning, an API contract check, lint, typecheck, four test suites and a build.
 

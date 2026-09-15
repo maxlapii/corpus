@@ -501,7 +501,7 @@ built from `citation.documentName`, optional `section` and `version`. Only chunk
 ## 10a. Curated answers (bot training)
 
 Both bots can answer from question/answer pairs an HR author publishes in the dashboard under
-**Knowledge → Bot training**. The orchestrator consults them before planning any tool call, and
+**Bot answers**. The orchestrator consults them before planning any tool call, and
 serves a match **verbatim** — no provider call, no paraphrase, no cost.
 
 | | External bot | Internal bot (unverified) | Internal bot (verified) |
@@ -528,7 +528,7 @@ Behaviour worth knowing when reasoning about a reply:
   phrasing that is not listed is a phrasing the bot will not match.
 - **A command can be bound to an answer.** `/benefits` runs the same turn as asking the question, so
   audience, classification and the account gate all still apply — an unauthorised command behaves
-  exactly like an unknown one. **Knowledge → Bot training → Telegram command menus** shows what each
+  exactly like an unknown one. **Bot answers → Command menus** shows what each
   bot would publish and pushes it with `setMyCommands`. Only `ACTIVE`, in-date, **PUBLIC** answers
   are listed, because Telegram shows the menu to anyone who opens the bot before they verify; a
   command on a more sensitive answer still works, it is just not advertised. Built-ins are always

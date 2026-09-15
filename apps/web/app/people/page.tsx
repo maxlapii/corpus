@@ -3,23 +3,38 @@
 /**
  * People directory (CLAUDE.md §33, §35).
  *
- * Lists employees from GET /employees. The API narrows the result to the
- * caller's grant — a MANAGER sees only direct reports, HR sees everyone — so
- * this page never filters for security, it only explains what it was given.
+ * Master/detail layout: the employee list on the left, and on the right either
+ * the selected person (actions, then facts) or the "Add employee" form.
  *
- * Compensation is RESTRICTED (§9): it lives behind its own endpoint, is fetched
- * only on an explicit click, and is shown only when the API answers. Every
- * `can()` check here is UX; the PolicyGateway decides (§34).
+ * GET /employees is narrowed by the API to the caller's grant — a MANAGER sees
+ * only direct reports, HR sees everyone — so this page never filters for
+ * security; it only shows what it was given. Compensation is RESTRICTED (§9):
+ * it has its own endpoint and is fetched only when the "Salary" disclosure is
+ * opened. Every `can()` check here is UX; the PolicyGateway decides (§34).
  */
 
-import { useMemo, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { PageHeader, Shell } from '@/components/shell'
-import { Badge, Card, Empty, ErrorState, Loading, formatDate, formatDateTime } from '@/components/ui'
+import { EmployeePicker, type PickedEmployee } from '@/components/employee-picker'
+import {
+  Badge,
+  Card,
+  Empty,
+  ErrorState,
+  Facts,
+  Field,
+  Loading,
+  Notice,
+  Pager,
+  SubmitError,
+  formatDate,
+  humanize,
+} from '@/components/ui'
 import { useSession } from '@/components/session'
-import { ApiRequestError, api, can, type Page } from '@/lib/api'
+import { api, can, type Page } from '@/lib/api'
 import { useApi } from '@/lib/use-api'
 
-// --- Response shapes (mirror the API; nothing is rendered that it does not return) --
+// --- Response shapes (apps/api/src/routes/employees.ts) ---------------------
 
 interface Employee {
   id: string
@@ -61,92 +76,25 @@ interface Compensation {
 const PAGE_SIZE = 25
 const EMPLOYEE_STATUSES = ['ACTIVE', 'ON_LEAVE', 'SUSPENDED', 'TERMINATED'] as const
 const EMPLOYMENT_TYPES = ['FULL_TIME', 'PART_TIME', 'CONTRACT', 'INTERN', 'TEMPORARY'] as const
+const COMMON_CURRENCIES = ['USD', 'KHR', 'THB', 'VND', 'SGD', 'EUR', 'GBP', 'AUD', 'JPY']
+const DEFAULT_STATUS = 'ACTIVE'
 
 // --- Local helpers -----------------------------------------------------------
 
-/** Per-field messages from a VALIDATION_FAILED response; empty for anything else. */
-function fieldIssues(error: unknown): Record<string, string> {
-  const out: Record<string, string> = {}
-  if (!(error instanceof ApiRequestError)) return out
-  const issues = error.error.details?.issues
-  if (!Array.isArray(issues)) return out
-  for (const issue of issues) {
-    if (typeof issue !== 'object' || issue === null) continue
-    const { path, message } = issue as { path?: unknown; message?: unknown }
-    if (typeof path === 'string' && typeof message === 'string' && !(path in out)) {
-      out[path] = message
-    }
-  }
-  return out
+function fullName(e: { firstName: string; lastName: string }): string {
+  return `${e.firstName} ${e.lastName}`.trim()
 }
 
-function fullName(employee: Employee): string {
-  return `${employee.firstName} ${employee.lastName}`.trim()
+function positionLabel(p: Position): string {
+  return p.level ? `${p.title} (${p.level})` : p.title
 }
 
-function humanize(value: string): string {
-  return value.replace(/_/g, ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase())
+function toPicked(e: Employee): PickedEmployee {
+  return { id: e.id, employeeNo: e.employeeNo, firstName: e.firstName, lastName: e.lastName, email: e.email }
 }
 
-/** A failed submit: calm permission notice for 403, an error for anything else. */
-function SubmitError({ error }: { error: unknown }) {
-  if (!error) return null
-  if (error instanceof ApiRequestError && error.isForbidden) return <ErrorState error={error} />
-  const message =
-    error instanceof ApiRequestError
-      ? error.error.message
-      : error instanceof Error
-        ? error.message
-        : 'Something went wrong.'
-  const requestId = error instanceof ApiRequestError ? error.error.requestId : undefined
-  return (
-    <div className="notice error" role="alert">
-      <strong>Could not save. </strong>
-      {message}
-      {requestId ? (
-        <div className="mono" style={{ marginTop: 6, fontSize: 11 }}>
-          Reference: {requestId}
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
-function Field({
-  id,
-  label,
-  error,
-  hint,
-  children,
-}: {
-  id: string
-  label: string
-  error?: string
-  hint?: string
-  children: ReactNode
-}) {
-  return (
-    <div className="field">
-      <label htmlFor={id}>{label}</label>
-      {children}
-      {error ? (
-        <div id={`${id}-error`} className="hint" style={{ color: 'var(--danger)' }} role="alert">
-          {error}
-        </div>
-      ) : hint ? (
-        <div className="hint">{hint}</div>
-      ) : null}
-    </div>
-  )
-}
-
-function Detail({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div>
-      <div className="kpi-label">{label}</div>
-      <div style={{ marginTop: 2 }}>{children}</div>
-    </div>
-  )
+function today(): string {
+  return new Date().toISOString().slice(0, 10)
 }
 
 // --- Page --------------------------------------------------------------------
@@ -157,7 +105,9 @@ interface Filters {
   status: string
 }
 
-const EMPTY_FILTERS: Filters = { query: '', departmentId: '', status: '' }
+const DEFAULT_FILTERS: Filters = { query: '', departmentId: '', status: DEFAULT_STATUS }
+
+type Selection = { kind: 'employee'; id: string } | { kind: 'create' } | null
 
 export default function PeoplePage() {
   const { user } = useSession()
@@ -168,14 +118,27 @@ export default function PeoplePage() {
   const canReadCompensation = can(user, 'employee.read.compensation')
 
   const [queryInput, setQueryInput] = useState('')
-  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS)
+  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS)
   const [offset, setOffset] = useState(0)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [showCreate, setShowCreate] = useState(false)
-  const [pageMessage, setPageMessage] = useState<string | null>(null)
+  const [selection, setSelection] = useState<Selection>(null)
+  const [panelNotice, setPanelNotice] = useState<string | null>(null)
+  const detailRef = useRef<HTMLDivElement>(null)
 
+  // Both lookups are fetched for everyone: read-only viewers need the names too.
   const departments = useApi<{ departments: Department[] }>('/departments')
-  const positions = useApi<{ positions: Position[] }>(canCreate || canUpdate ? '/positions' : null)
+  const positions = useApi<{ positions: Position[] }>('/positions')
+
+  // Debounced search: the list refreshes 300 ms after typing stops.
+  useEffect(() => {
+    const term = queryInput.trim()
+    if (term === filters.query) return
+    const timer = setTimeout(() => {
+      setFilters((f) => ({ ...f, query: term }))
+      setOffset(0)
+      setSelection(null)
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [queryInput, filters.query])
 
   const listPath = useMemo(() => {
     const params = new URLSearchParams()
@@ -194,247 +157,243 @@ export default function PeoplePage() {
     return map
   }, [departments.data])
 
-  const employeeNames = useMemo(() => {
+  const positionNames = useMemo(() => {
     const map = new Map<string, string>()
-    for (const e of list.data?.items ?? []) map.set(e.id, fullName(e))
+    for (const p of positions.data?.positions ?? []) map.set(p.id, positionLabel(p))
     return map
-  }, [list.data])
+  }, [positions.data])
 
-  const hasFilters = filters.query !== '' || filters.departmentId !== '' || filters.status !== ''
+  const selectedId = selection?.kind === 'employee' ? selection.id : null
 
-  function applySearch(event: FormEvent) {
-    event.preventDefault()
-    setOffset(0)
-    setFilters((f) => ({ ...f, query: queryInput.trim() }))
-  }
-
-  function updateFilter(key: 'departmentId' | 'status') {
-    return (event: ChangeEvent<HTMLSelectElement>) => {
-      const value = event.target.value
-      setOffset(0)
-      setFilters((f) => ({ ...f, [key]: value }))
+  // On narrow screens the detail panel sits below the list; bring it into view.
+  useEffect(() => {
+    if (selection && typeof window !== 'undefined' && window.innerWidth < 1200) {
+      detailRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
     }
+  }, [selection])
+
+  const filtersSet =
+    filters.query !== '' || filters.departmentId !== '' || filters.status !== DEFAULT_STATUS
+
+  function changeFilter(key: 'departmentId' | 'status', value: string) {
+    setFilters((f) => ({ ...f, [key]: value }))
+    setOffset(0)
+    setSelection(null)
   }
 
   function clearFilters() {
     setQueryInput('')
+    setFilters(DEFAULT_FILTERS)
     setOffset(0)
-    setFilters(EMPTY_FILTERS)
+    setSelection(null)
+  }
+
+  function select(next: Selection) {
+    setPanelNotice(null)
+    setSelection(next)
+  }
+
+  if (!canReadAll && !canReadTeam) {
+    return (
+      <Shell>
+        <PageHeader title="People" />
+        <Card>
+          <Empty title="You do not have access to People" hint="Ask an HR administrator." />
+        </Card>
+      </Shell>
+    )
   }
 
   const page = list.data
-  const from = page && page.items.length > 0 ? page.offset + 1 : 0
-  const to = page ? page.offset + page.items.length : 0
 
   return (
     <Shell>
       <PageHeader
         title="People"
-        description="Employee directory. Select a row to view a profile."
+        description={
+          canReadAll
+            ? 'Everyone in the company, with their department, position and manager.'
+            : 'The people who report to you.'
+        }
         actions={
           canCreate ? (
-            <button type="button" className="primary" onClick={() => setShowCreate((v) => !v)}>
-              {showCreate ? 'Close form' : 'Add employee'}
+            <button type="button" className="primary" onClick={() => select({ kind: 'create' })}>
+              Add employee
             </button>
           ) : undefined
         }
       />
 
-      {!canReadAll && canReadTeam ? (
-        <div className="notice info" role="note">
-          <strong>Scoped to your team. </strong>
-          This list shows only the employees who report to you. The wider directory is available to HR.
-        </div>
-      ) : null}
-
-      {pageMessage ? (
-        <div className="notice info" role="status" aria-live="polite">
-          {pageMessage}
-        </div>
-      ) : null}
-
-      {showCreate && canCreate ? (
-        <div style={{ marginBottom: 16 }}>
-          <CreateEmployeeForm
-            departments={departments.data?.departments ?? []}
-            positions={positions.data?.positions ?? []}
-            onCancel={() => setShowCreate(false)}
-            onCreated={(employee) => {
-              setShowCreate(false)
-              setPageMessage(`Created ${fullName(employee)} (${employee.employeeNo}).`)
-              setSelectedId(employee.id)
-              list.reload()
-            }}
-          />
-        </div>
-      ) : null}
-
-      <Card title="Directory">
-        <form className="toolbar" role="search" onSubmit={applySearch}>
-          <label htmlFor="people-search" className="visually-hidden">
-            Search employees
-          </label>
-          <input
-            id="people-search"
-            type="search"
-            placeholder="Search name, e-mail or employee no."
-            value={queryInput}
-            onChange={(e) => setQueryInput(e.target.value)}
-            maxLength={100}
-          />
-          <label htmlFor="people-department" className="visually-hidden">
-            Department
-          </label>
-          <select id="people-department" value={filters.departmentId} onChange={updateFilter('departmentId')}>
-            <option value="">All departments</option>
-            {(departments.data?.departments ?? []).map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-              </option>
-            ))}
-          </select>
-          <label htmlFor="people-status" className="visually-hidden">
-            Status
-          </label>
-          <select id="people-status" value={filters.status} onChange={updateFilter('status')}>
-            <option value="">All statuses</option>
-            {EMPLOYEE_STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {humanize(s)}
-              </option>
-            ))}
-          </select>
-          <button type="submit">Search</button>
-          {hasFilters ? (
-            <button type="button" onClick={clearFilters}>
-              Clear
-            </button>
-          ) : null}
-        </form>
-
-        {departments.error ? <ErrorState error={departments.error} /> : null}
-
-        {list.loading ? (
-          <Loading rows={6} label="Loading employees" />
-        ) : list.error ? (
-          <ErrorState error={list.error} />
-        ) : !page || page.items.length === 0 ? (
-          <Empty
-            title="No employees found"
-            hint={hasFilters ? 'Try clearing the filters.' : 'Employees will appear here once they are added.'}
-          />
-        ) : (
-          <>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th scope="col">No.</th>
-                    <th scope="col">Name</th>
-                    <th scope="col">E-mail</th>
-                    <th scope="col">Department</th>
-                    <th scope="col">Status</th>
-                    <th scope="col">Hire date</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {page.items.map((employee) => {
-                    const selected = employee.id === selectedId
-                    return (
-                      <tr
-                        key={employee.id}
-                        onClick={() => setSelectedId(employee.id)}
-                        style={{
-                          cursor: 'pointer',
-                          background: selected ? 'var(--accent-soft)' : undefined,
-                        }}
-                      >
-                        <td className="mono">{employee.employeeNo}</td>
-                        <td>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setSelectedId(employee.id)
-                            }}
-                            aria-pressed={selected}
-                            style={{
-                              background: 'none',
-                              border: 'none',
-                              padding: 0,
-                              color: 'var(--accent)',
-                              fontWeight: 500,
-                              textAlign: 'left',
-                            }}
-                          >
-                            {fullName(employee)}
-                          </button>
-                        </td>
-                        <td>{employee.email}</td>
-                        <td>
-                          {employee.departmentId
-                            ? departmentNames.get(employee.departmentId) ?? (
-                                <span className="mono">{employee.departmentId}</span>
-                              )
-                            : '—'}
-                        </td>
-                        <td>
-                          <Badge value={employee.status} />
-                        </td>
-                        <td>{formatDate(employee.hireDate)}</td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            <div
-              className="toolbar"
-              style={{ marginTop: 12, marginBottom: 0, justifyContent: 'space-between' }}
+      <div className="split">
+        <Card title="Directory">
+          <div className="toolbar" role="search">
+            <label htmlFor="people-search" className="visually-hidden">
+              Search by name, e-mail or employee number
+            </label>
+            <input
+              id="people-search"
+              type="search"
+              placeholder="Search by name, e-mail or employee number"
+              value={queryInput}
+              onChange={(e) => setQueryInput(e.target.value)}
+              maxLength={100}
+            />
+            <label htmlFor="people-department" className="visually-hidden">
+              Department
+            </label>
+            <select
+              id="people-department"
+              value={filters.departmentId}
+              onChange={(e) => changeFilter('departmentId', e.target.value)}
             >
-              <span role="status" aria-live="polite" style={{ color: 'var(--text-muted)' }}>
-                Showing {from}–{to} of {page.total.toLocaleString()}
-              </span>
-              {page.hasMore || page.offset > 0 ? (
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button
-                    type="button"
-                    disabled={page.offset === 0}
-                    onClick={() => setOffset(Math.max(0, page.offset - page.limit))}
-                  >
-                    Previous
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!page.hasMore}
-                    onClick={() => setOffset(page.offset + page.limit)}
-                  >
-                    Next
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          </>
-        )}
-      </Card>
+              <option value="">All departments</option>
+              {(departments.data?.departments ?? []).map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+            <label htmlFor="people-status" className="visually-hidden">
+              Status
+            </label>
+            <select
+              id="people-status"
+              value={filters.status}
+              onChange={(e) => changeFilter('status', e.target.value)}
+            >
+              <option value="">All statuses</option>
+              {EMPLOYEE_STATUSES.map((s) => (
+                <option key={s} value={s}>
+                  {humanize(s)}
+                </option>
+              ))}
+            </select>
+            {filtersSet ? (
+              <button type="button" onClick={clearFilters}>
+                Clear
+              </button>
+            ) : null}
+          </div>
 
-      {selectedId ? (
-        <div style={{ marginTop: 16 }}>
-          <EmployeeDetail
-            key={selectedId}
-            id={selectedId}
-            departments={departments.data?.departments ?? []}
-            positions={positions.data?.positions ?? []}
-            departmentNames={departmentNames}
-            employeeNames={employeeNames}
-            canUpdate={canUpdate}
-            canReadCompensation={canReadCompensation}
-            onClose={() => setSelectedId(null)}
-            onChanged={() => list.reload()}
-          />
+          {list.loading ? (
+            <Loading rows={6} label="Loading employees" />
+          ) : list.error ? (
+            <ErrorState error={list.error} />
+          ) : !page || page.items.length === 0 ? (
+            <Empty
+              title="No one matches"
+              hint={
+                filtersSet
+                  ? 'Try a different search, or clear the filters to include everyone.'
+                  : 'Employees appear here once they are added.'
+              }
+            />
+          ) : (
+            <>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">Name</th>
+                      <th scope="col">Department</th>
+                      <th scope="col">Position</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Hire date</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {page.items.map((employee) => {
+                      const selected = employee.id === selectedId
+                      return (
+                        <tr
+                          key={employee.id}
+                          className="selectable"
+                          aria-selected={selected}
+                          onClick={() => select({ kind: 'employee', id: employee.id })}
+                        >
+                          <td>
+                            <button
+                              type="button"
+                              className="link"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                select({ kind: 'employee', id: employee.id })
+                              }}
+                            >
+                              {fullName(employee)}
+                            </button>
+                            <div className="small-text muted">{employee.employeeNo}</div>
+                          </td>
+                          <td>
+                            {employee.departmentId
+                              ? departmentNames.get(employee.departmentId) ?? '—'
+                              : '—'}
+                          </td>
+                          <td>
+                            {employee.positionId ? positionNames.get(employee.positionId) ?? '—' : '—'}
+                          </td>
+                          <td>
+                            <Badge value={employee.status} />
+                          </td>
+                          <td>{formatDate(employee.hireDate)}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <Pager
+                page={page}
+                onChange={(next) => {
+                  setOffset(next)
+                  setSelection(null)
+                }}
+              />
+            </>
+          )}
+        </Card>
+
+        <div ref={detailRef}>
+          {selection?.kind === 'create' && canCreate ? (
+            <CreateEmployeeForm
+              departments={departments.data?.departments ?? []}
+              positions={positions.data?.positions ?? []}
+              onCancel={() => select(null)}
+              onCreated={(employee) => {
+                setSelection({ kind: 'employee', id: employee.id })
+                setPanelNotice(`Added ${fullName(employee)}.`)
+                list.reload()
+              }}
+            />
+          ) : selection?.kind === 'employee' ? (
+            <EmployeeDetail
+              key={selection.id}
+              id={selection.id}
+              departments={departments.data?.departments ?? []}
+              positions={positions.data?.positions ?? []}
+              departmentNames={departmentNames}
+              positionNames={positionNames}
+              canUpdate={canUpdate}
+              canReadCompensation={canReadCompensation}
+              notice={panelNotice}
+              onNotice={setPanelNotice}
+              onClose={() => select(null)}
+              onChanged={() => list.reload()}
+            />
+          ) : (
+            <Card>
+              <Empty
+                title="Select someone"
+                hint={
+                  canCreate
+                    ? 'Choose a person from the list to see their details, or add a new employee.'
+                    : 'Choose a person from the list to see their details.'
+                }
+              />
+            </Card>
+          )}
         </div>
-      ) : null}
+      </div>
     </Shell>
   )
 }
@@ -449,7 +408,6 @@ interface CreateForm {
   phone: string
   departmentId: string
   positionId: string
-  managerId: string
   hireDate: string
   employmentType: string
 }
@@ -462,7 +420,6 @@ const EMPTY_CREATE: CreateForm = {
   phone: '',
   departmentId: '',
   positionId: '',
-  managerId: '',
   hireDate: '',
   employmentType: 'FULL_TIME',
 }
@@ -479,18 +436,14 @@ function CreateEmployeeForm({
   onCancel(): void
 }) {
   const [form, setForm] = useState<CreateForm>(EMPTY_CREATE)
+  const [manager, setManager] = useState<PickedEmployee | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<unknown>(null)
-  const issues = fieldIssues(error)
 
-  const set =
-    (key: keyof CreateForm) => (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-      const value = event.target.value
-      setForm((f) => ({ ...f, [key]: value }))
-    }
-
-  const invalid = (key: keyof CreateForm) => (issues[key] ? true : undefined)
-  const describedBy = (key: keyof CreateForm) => (issues[key] ? `create-${key}-error` : undefined)
+  const set = (key: keyof CreateForm) => (event: { target: { value: string } }) => {
+    const value = event.target.value
+    setForm((f) => ({ ...f, [key]: value }))
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -508,7 +461,7 @@ function CreateEmployeeForm({
       if (form.phone.trim()) body.phone = form.phone.trim()
       if (form.departmentId) body.departmentId = form.departmentId
       if (form.positionId) body.positionId = form.positionId
-      if (form.managerId.trim()) body.managerId = form.managerId.trim()
+      if (manager) body.managerId = manager.id
 
       const result = await api<{ employee: Employee }>('/employees', { method: 'POST', body })
       onCreated(result.employee)
@@ -523,165 +476,128 @@ function CreateEmployeeForm({
     <Card
       title="Add employee"
       actions={
-        <button type="button" onClick={onCancel} disabled={submitting}>
+        <button type="button" className="small" onClick={onCancel} disabled={submitting}>
           Cancel
         </button>
       }
     >
-      <form onSubmit={submit} noValidate>
-        <SubmitError error={error} />
-        <div className="form-row">
-          <Field id="create-employeeNo" label="Employee no." error={issues.employeeNo}>
-            <input
-              id="create-employeeNo"
-              value={form.employeeNo}
-              onChange={set('employeeNo')}
-              required
-              maxLength={40}
-              aria-invalid={invalid('employeeNo')}
-              aria-describedby={describedBy('employeeNo')}
-            />
-          </Field>
-          <Field id="create-firstName" label="First name" error={issues.firstName}>
-            <input
-              id="create-firstName"
-              value={form.firstName}
-              onChange={set('firstName')}
-              required
-              maxLength={80}
-              autoComplete="off"
-              aria-invalid={invalid('firstName')}
-              aria-describedby={describedBy('firstName')}
-            />
-          </Field>
-          <Field id="create-lastName" label="Last name" error={issues.lastName}>
-            <input
-              id="create-lastName"
-              value={form.lastName}
-              onChange={set('lastName')}
-              required
-              maxLength={80}
-              autoComplete="off"
-              aria-invalid={invalid('lastName')}
-              aria-describedby={describedBy('lastName')}
-            />
-          </Field>
-        </div>
-        <div className="form-row">
-          <Field id="create-email" label="E-mail" error={issues.email}>
-            <input
-              id="create-email"
-              type="email"
-              value={form.email}
-              onChange={set('email')}
-              required
-              maxLength={254}
-              autoComplete="off"
-              aria-invalid={invalid('email')}
-              aria-describedby={describedBy('email')}
-            />
-          </Field>
-          <Field id="create-phone" label="Phone" error={issues.phone} hint="Optional">
-            <input
-              id="create-phone"
-              type="tel"
-              value={form.phone}
-              onChange={set('phone')}
-              maxLength={40}
-              autoComplete="off"
-              aria-invalid={invalid('phone')}
-              aria-describedby={describedBy('phone')}
-            />
-          </Field>
-        </div>
-        <div className="form-row">
-          <Field id="create-departmentId" label="Department" error={issues.departmentId}>
-            <select
-              id="create-departmentId"
-              value={form.departmentId}
-              onChange={set('departmentId')}
-              aria-invalid={invalid('departmentId')}
-              aria-describedby={describedBy('departmentId')}
-            >
-              <option value="">— None —</option>
-              {departments.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field id="create-positionId" label="Position" error={issues.positionId}>
-            <select
-              id="create-positionId"
-              value={form.positionId}
-              onChange={set('positionId')}
-              aria-invalid={invalid('positionId')}
-              aria-describedby={describedBy('positionId')}
-            >
-              <option value="">— None —</option>
-              {positions.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.title}
-                  {p.level ? ` (${p.level})` : ''}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field
-            id="create-managerId"
-            label="Manager id"
-            error={issues.managerId}
-            hint="Optional. The employee id of the line manager."
-          >
-            <input
-              id="create-managerId"
-              className="mono"
-              value={form.managerId}
-              onChange={set('managerId')}
-              maxLength={40}
-              autoComplete="off"
-              aria-invalid={invalid('managerId')}
-              aria-describedby={describedBy('managerId')}
-            />
-          </Field>
-        </div>
-        <div className="form-row">
-          <Field id="create-hireDate" label="Hire date" error={issues.hireDate}>
-            <input
-              id="create-hireDate"
-              type="date"
-              value={form.hireDate}
-              onChange={set('hireDate')}
-              required
-              aria-invalid={invalid('hireDate')}
-              aria-describedby={describedBy('hireDate')}
-            />
-          </Field>
-          <Field id="create-employmentType" label="Employment type" error={issues.employmentType}>
-            <select
-              id="create-employmentType"
-              value={form.employmentType}
-              onChange={set('employmentType')}
-              aria-invalid={invalid('employmentType')}
-              aria-describedby={describedBy('employmentType')}
-            >
-              {EMPLOYMENT_TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {humanize(t)}
-                </option>
-              ))}
-            </select>
-          </Field>
-        </div>
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button type="button" onClick={onCancel} disabled={submitting}>
-            Cancel
-          </button>
-          <button type="submit" className="primary" disabled={submitting}>
-            {submitting ? 'Creating…' : 'Create employee'}
-          </button>
-        </div>
+      <form onSubmit={submit}>
+        <fieldset disabled={submitting}>
+          <div className="form-row">
+            <Field id="create-firstName" label="First name">
+              <input
+                id="create-firstName"
+                value={form.firstName}
+                onChange={set('firstName')}
+                required
+                maxLength={80}
+                autoComplete="off"
+              />
+            </Field>
+            <Field id="create-lastName" label="Last name">
+              <input
+                id="create-lastName"
+                value={form.lastName}
+                onChange={set('lastName')}
+                required
+                maxLength={80}
+                autoComplete="off"
+              />
+            </Field>
+          </div>
+          <div className="form-row">
+            <Field id="create-email" label="Work e-mail">
+              <input
+                id="create-email"
+                type="email"
+                value={form.email}
+                onChange={set('email')}
+                required
+                maxLength={254}
+                autoComplete="off"
+              />
+            </Field>
+            <Field id="create-employeeNo" label="Employee no.">
+              <input
+                id="create-employeeNo"
+                value={form.employeeNo}
+                onChange={set('employeeNo')}
+                required
+                maxLength={40}
+                autoComplete="off"
+              />
+            </Field>
+          </div>
+          <div className="form-row">
+            <Field id="create-departmentId" label="Department">
+              <select id="create-departmentId" value={form.departmentId} onChange={set('departmentId')}>
+                <option value="">— None —</option>
+                {departments.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field id="create-positionId" label="Position">
+              <select id="create-positionId" value={form.positionId} onChange={set('positionId')}>
+                <option value="">— None —</option>
+                {positions.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {positionLabel(p)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+          <div className="form-row">
+            <Field id="create-hireDate" label="Hire date">
+              <input
+                id="create-hireDate"
+                type="date"
+                value={form.hireDate}
+                onChange={set('hireDate')}
+                required
+              />
+            </Field>
+            <Field id="create-employmentType" label="Employment type">
+              <select id="create-employmentType" value={form.employmentType} onChange={set('employmentType')}>
+                {EMPLOYMENT_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {humanize(t)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+
+          <details className="more">
+            <summary>More options</summary>
+            <Field id="create-phone" label="Phone">
+              <input
+                id="create-phone"
+                type="tel"
+                value={form.phone}
+                onChange={set('phone')}
+                maxLength={40}
+                autoComplete="off"
+              />
+            </Field>
+            <Field id="create-manager" label="Manager">
+              <EmployeePicker id="create-manager" value={manager} onChange={setManager} disabled={submitting} />
+            </Field>
+          </details>
+
+          <SubmitError error={error} />
+          <div className="form-actions">
+            <button type="submit" className="primary" disabled={submitting}>
+              {submitting ? 'Adding…' : 'Add employee'}
+            </button>
+            <button type="button" onClick={onCancel} disabled={submitting}>
+              Cancel
+            </button>
+          </div>
+        </fieldset>
       </form>
     </Card>
   )
@@ -689,14 +605,18 @@ function CreateEmployeeForm({
 
 // --- Detail ------------------------------------------------------------------
 
+type DetailMode = 'view' | 'edit' | 'status'
+
 function EmployeeDetail({
   id,
   departments,
   positions,
   departmentNames,
-  employeeNames,
+  positionNames,
   canUpdate,
   canReadCompensation,
+  notice,
+  onNotice,
   onClose,
   onChanged,
 }: {
@@ -704,197 +624,208 @@ function EmployeeDetail({
   departments: Department[]
   positions: Position[]
   departmentNames: Map<string, string>
-  employeeNames: Map<string, string>
+  positionNames: Map<string, string>
   canUpdate: boolean
   canReadCompensation: boolean
+  notice: string | null
+  onNotice(message: string | null): void
   onClose(): void
   onChanged(): void
 }) {
   const detail = useApi<{ employee: Employee }>(`/employees/${encodeURIComponent(id)}`)
-  const [message, setMessage] = useState<string | null>(null)
   const employee = detail.data?.employee ?? null
+  const [mode, setMode] = useState<DetailMode>('view')
 
-  const positionTitles = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const p of positions) map.set(p.id, p.level ? `${p.title} (${p.level})` : p.title)
-    return map
-  }, [positions])
+  // The manager's name comes from their own record. A missing or refused
+  // lookup shows "—" — the API decides who may be seen.
+  const managerPath = employee?.managerId ? `/employees/${encodeURIComponent(employee.managerId)}` : null
+  const manager = useApi<{ employee: Employee }>(managerPath)
+  const managerRecord = manager.data?.employee ?? null
+  const managerName = managerRecord ? fullName(managerRecord) : manager.loading ? 'Loading…' : '—'
+
+  function switchMode(next: DetailMode) {
+    onNotice(null)
+    setMode((current) => (current === next ? 'view' : next))
+  }
+
+  function saved(message: string) {
+    onNotice(message)
+    setMode('view')
+    detail.reload()
+    onChanged()
+  }
 
   return (
-    <Card
-      title={employee ? fullName(employee) : 'Employee'}
-      actions={
-        <button type="button" onClick={onClose}>
+    <Card>
+      <div className="card-header">
+        <h2>
+          {employee ? fullName(employee) : 'Employee'}{' '}
+          {employee ? <Badge value={employee.status} /> : null}
+        </h2>
+        <button type="button" className="small" onClick={onClose}>
           Close
         </button>
-      }
-    >
+      </div>
+
       {detail.loading ? (
-        <Loading rows={4} label="Loading employee" />
+        <Loading rows={5} label="Loading employee" />
       ) : detail.error ? (
         <ErrorState error={detail.error} />
       ) : !employee ? (
-        <Empty title="Employee not found" />
+        <Empty title="Employee not found" hint="They may have been removed, or the list is out of date." />
       ) : (
         <>
-          {message ? (
-            <div className="notice info" role="status" aria-live="polite">
-              {message}
+          {notice ? <Notice tone="ok">{notice}</Notice> : null}
+
+          {canUpdate ? (
+            <div className="actions">
+              <button
+                type="button"
+                className="small"
+                aria-pressed={mode === 'edit'}
+                onClick={() => switchMode('edit')}
+              >
+                Edit details
+              </button>
+              <button
+                type="button"
+                className="small"
+                aria-pressed={mode === 'status'}
+                onClick={() => switchMode('status')}
+              >
+                Change status
+              </button>
             </div>
           ) : null}
 
-          <div className="grid kpi" style={{ marginBottom: 16 }}>
-            <Detail label="Employee no.">
-              <span className="mono">{employee.employeeNo}</span>
-            </Detail>
-            <Detail label="Status">
-              <Badge value={employee.status} />
-            </Detail>
-            <Detail label="E-mail">
-              <a href={`mailto:${employee.email}`}>{employee.email}</a>
-            </Detail>
-            <Detail label="Phone">{employee.phone ?? '—'}</Detail>
-            <Detail label="Department">
-              {employee.departmentId ? (
-                departmentNames.get(employee.departmentId) ?? (
-                  <span className="mono">{employee.departmentId}</span>
-                )
-              ) : (
-                '—'
-              )}
-            </Detail>
-            <Detail label="Position">
-              {employee.positionId ? (
-                positionTitles.get(employee.positionId) ?? (
-                  <span className="mono">{employee.positionId}</span>
-                )
-              ) : (
-                '—'
-              )}
-            </Detail>
-            <Detail label="Manager">
-              {employee.managerId ? (
-                <>
-                  {employeeNames.get(employee.managerId) ? (
-                    <div>{employeeNames.get(employee.managerId)}</div>
-                  ) : null}
-                  <span className="mono">{employee.managerId}</span>
-                </>
-              ) : (
-                '—'
-              )}
-            </Detail>
-            <Detail label="Employment type">
-              <Badge value={employee.employmentType} />
-            </Detail>
-            <Detail label="Hire date">{formatDate(employee.hireDate)}</Detail>
-            <Detail label="Last updated">{formatDateTime(employee.updatedAt)}</Detail>
-          </div>
+          {mode === 'edit' && canUpdate ? (
+            <EditDetailsForm
+              key={`${employee.updatedAt}-${managerRecord?.id ?? ''}`}
+              employee={employee}
+              currentManager={managerRecord ? toPicked(managerRecord) : null}
+              departments={departments}
+              positions={positions}
+              onCancel={() => setMode('view')}
+              onSaved={(updated) => saved(`Saved changes for ${fullName(updated)}.`)}
+            />
+          ) : null}
 
-          {canUpdate ? (
-            <section style={{ borderTop: '1px solid var(--border)', paddingTop: 14, marginTop: 4 }}>
-              <h3 style={{ marginBottom: 10 }}>Edit basics</h3>
-              <EditBasicsForm
-                key={employee.updatedAt}
-                employee={employee}
-                departments={departments}
-                positions={positions}
-                onSaved={(updated) => {
-                  setMessage(`Saved changes for ${fullName(updated)}.`)
-                  detail.reload()
-                  onChanged()
-                }}
-              />
-            </section>
+          {mode === 'status' && canUpdate ? (
+            <ChangeStatusForm
+              key={employee.updatedAt}
+              employee={employee}
+              onCancel={() => setMode('view')}
+              onSaved={(updated) => saved(`${fullName(updated)} is now ${humanize(updated.status).toLowerCase()}.`)}
+            />
           ) : null}
 
           {canReadCompensation ? (
-            <section style={{ borderTop: '1px solid var(--border)', paddingTop: 14, marginTop: 16 }}>
-              <CompensationSection employeeId={employee.id} employeeName={fullName(employee)} />
-            </section>
+            <SalarySection employeeId={employee.id} onOpen={() => onNotice(null)} />
           ) : null}
+
+          <Facts
+            items={[
+              { label: 'Employee no.', value: employee.employeeNo },
+              { label: 'E-mail', value: <a href={`mailto:${employee.email}`}>{employee.email}</a> },
+              { label: 'Phone', value: employee.phone },
+              {
+                label: 'Department',
+                value: employee.departmentId ? departmentNames.get(employee.departmentId) ?? '—' : '—',
+              },
+              {
+                label: 'Position',
+                value: employee.positionId ? positionNames.get(employee.positionId) ?? '—' : '—',
+              },
+              { label: 'Manager', value: employee.managerId ? managerName : '—' },
+              { label: 'Employment type', value: humanize(employee.employmentType) },
+              { label: 'Hire date', value: formatDate(employee.hireDate) },
+            ]}
+          />
         </>
       )}
     </Card>
   )
 }
 
-// --- Edit basics -------------------------------------------------------------
+// --- Edit details ------------------------------------------------------------
 
 interface EditForm {
-  status: string
+  firstName: string
+  lastName: string
+  phone: string
   departmentId: string
   positionId: string
-  managerId: string
+  employmentType: string
 }
 
-function EditBasicsForm({
+/**
+ * Only changed values are sent. The API treats an empty value as "not
+ * provided", so a department, position or manager cannot be cleared here —
+ * only replaced.
+ */
+function EditDetailsForm({
   employee,
+  currentManager,
   departments,
   positions,
+  onCancel,
   onSaved,
 }: {
   employee: Employee
+  currentManager: PickedEmployee | null
   departments: Department[]
   positions: Position[]
+  onCancel(): void
   onSaved(employee: Employee): void
 }) {
   const [form, setForm] = useState<EditForm>({
-    status: employee.status,
+    firstName: employee.firstName,
+    lastName: employee.lastName,
+    phone: employee.phone ?? '',
     departmentId: employee.departmentId ?? '',
     positionId: employee.positionId ?? '',
-    managerId: employee.managerId ?? '',
+    employmentType: employee.employmentType,
   })
+  const [manager, setManager] = useState<PickedEmployee | null>(currentManager)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<unknown>(null)
-  const [note, setNote] = useState<string | null>(null)
-  const issues = fieldIssues(error)
 
-  const set =
-    (key: keyof EditForm) => (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-      const value = event.target.value
-      setNote(null)
-      setForm((f) => ({ ...f, [key]: value }))
-    }
+  const set = (key: keyof EditForm) => (event: { target: { value: string } }) => {
+    const value = event.target.value
+    setForm((f) => ({ ...f, [key]: value }))
+  }
 
-  // Only changed, non-empty values are sent. The API treats an empty value as
-  // "not provided", so clearing a field is not offered here.
   const changes = useMemo(() => {
     const body: Record<string, string> = {}
-    if (form.status !== employee.status) body.status = form.status
+    const first = form.firstName.trim()
+    const last = form.lastName.trim()
+    const phone = form.phone.trim()
+    if (first && first !== employee.firstName) body.firstName = first
+    if (last && last !== employee.lastName) body.lastName = last
+    if (phone && phone !== (employee.phone ?? '')) body.phone = phone
     if (form.departmentId && form.departmentId !== (employee.departmentId ?? '')) {
       body.departmentId = form.departmentId
     }
     if (form.positionId && form.positionId !== (employee.positionId ?? '')) {
       body.positionId = form.positionId
     }
-    const manager = form.managerId.trim()
-    if (manager && manager !== (employee.managerId ?? '')) body.managerId = manager
+    if (form.employmentType !== employee.employmentType) body.employmentType = form.employmentType
+    if (manager && manager.id !== (employee.managerId ?? '')) body.managerId = manager.id
     return body
-  }, [form, employee])
+  }, [form, manager, employee])
 
   const dirty = Object.keys(changes).length > 0
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    if (!dirty) {
-      setNote('No changes to save.')
-      return
-    }
-    if (changes.status !== undefined) {
-      const ok = window.confirm(
-        `Change the status of ${fullName(employee)} from ${humanize(employee.status)} to ${humanize(changes.status)}? This change is audited.`,
-      )
-      if (!ok) return
-    }
+    if (!dirty) return
     setSubmitting(true)
     setError(null)
-    setNote(null)
     try {
-      const result = await api<{ employee: Employee }>(
-        `/employees/${encodeURIComponent(employee.id)}`,
-        { method: 'PUT', body: changes },
-      )
+      const result = await api<{ employee: Employee }>(`/employees/${encodeURIComponent(employee.id)}`, {
+        method: 'PUT',
+        body: changes,
+      })
       onSaved(result.employee)
     } catch (e) {
       setError(e)
@@ -904,152 +835,130 @@ function EditBasicsForm({
   }
 
   return (
-    <form onSubmit={submit} noValidate>
-      <SubmitError error={error} />
-      <div className="form-row">
-        <Field id="edit-status" label="Status" error={issues.status}>
-          <select
-            id="edit-status"
-            value={form.status}
-            onChange={set('status')}
-            aria-invalid={issues.status ? true : undefined}
-            aria-describedby={issues.status ? 'edit-status-error' : undefined}
-          >
-            {EMPLOYEE_STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {humanize(s)}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field id="edit-departmentId" label="Department" error={issues.departmentId}>
-          <select
-            id="edit-departmentId"
-            value={form.departmentId}
-            onChange={set('departmentId')}
-            aria-invalid={issues.departmentId ? true : undefined}
-            aria-describedby={issues.departmentId ? 'edit-departmentId-error' : undefined}
-          >
-            {employee.departmentId ? null : <option value="">— None —</option>}
-            {departments.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field id="edit-positionId" label="Position" error={issues.positionId}>
-          <select
-            id="edit-positionId"
-            value={form.positionId}
-            onChange={set('positionId')}
-            aria-invalid={issues.positionId ? true : undefined}
-            aria-describedby={issues.positionId ? 'edit-positionId-error' : undefined}
-          >
-            {employee.positionId ? null : <option value="">— None —</option>}
-            {positions.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.title}
-                {p.level ? ` (${p.level})` : ''}
-              </option>
-            ))}
-          </select>
-        </Field>
+    <form onSubmit={submit} className="card flat">
+      <fieldset disabled={submitting}>
+        <legend>Edit details</legend>
+        <div className="form-row">
+          <Field id="edit-firstName" label="First name">
+            <input
+              id="edit-firstName"
+              value={form.firstName}
+              onChange={set('firstName')}
+              required
+              maxLength={80}
+              autoComplete="off"
+            />
+          </Field>
+          <Field id="edit-lastName" label="Last name">
+            <input
+              id="edit-lastName"
+              value={form.lastName}
+              onChange={set('lastName')}
+              required
+              maxLength={80}
+              autoComplete="off"
+            />
+          </Field>
+        </div>
+        <div className="form-row">
+          <Field id="edit-departmentId" label="Department">
+            <select id="edit-departmentId" value={form.departmentId} onChange={set('departmentId')}>
+              {employee.departmentId ? null : <option value="">— None —</option>}
+              {departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field id="edit-positionId" label="Position">
+            <select id="edit-positionId" value={form.positionId} onChange={set('positionId')}>
+              {employee.positionId ? null : <option value="">— None —</option>}
+              {positions.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {positionLabel(p)}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
         <Field
-          id="edit-managerId"
-          label="Manager id"
-          error={issues.managerId}
-          hint="The employee id of the line manager."
+          id="edit-manager"
+          label="Manager"
+          hint={employee.managerId && !manager ? 'Pick a new manager. The current one stays until you do.' : undefined}
         >
-          <input
-            id="edit-managerId"
-            className="mono"
-            value={form.managerId}
-            onChange={set('managerId')}
-            maxLength={40}
-            autoComplete="off"
-            aria-invalid={issues.managerId ? true : undefined}
-            aria-describedby={issues.managerId ? 'edit-managerId-error' : undefined}
-          />
+          <EmployeePicker id="edit-manager" value={manager} onChange={setManager} disabled={submitting} />
         </Field>
-      </div>
-      <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'flex-end' }}>
-        <span role="status" aria-live="polite" style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-          {note}
-        </span>
-        <button type="submit" className="primary" disabled={submitting || !dirty}>
-          {submitting ? 'Saving…' : 'Save changes'}
-        </button>
-      </div>
+        <div className="form-row">
+          <Field id="edit-employmentType" label="Employment type">
+            <select id="edit-employmentType" value={form.employmentType} onChange={set('employmentType')}>
+              {EMPLOYMENT_TYPES.map((t) => (
+                <option key={t} value={t}>
+                  {humanize(t)}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field id="edit-phone" label="Phone">
+            <input
+              id="edit-phone"
+              type="tel"
+              value={form.phone}
+              onChange={set('phone')}
+              maxLength={40}
+              autoComplete="off"
+            />
+          </Field>
+        </div>
+        <SubmitError error={error} />
+        <div className="form-actions">
+          <button type="submit" className="primary" disabled={submitting || !dirty}>
+            {submitting ? 'Saving…' : 'Save changes'}
+          </button>
+          <button type="button" onClick={onCancel} disabled={submitting}>
+            Cancel
+          </button>
+          {!dirty ? <span className="small-text muted">Nothing changed yet.</span> : null}
+        </div>
+      </fieldset>
     </form>
   )
 }
 
-// --- Compensation (RESTRICTED) ------------------------------------------------
+// --- Change status -----------------------------------------------------------
 
-type CompensationState =
-  | { status: 'idle' }
-  | { status: 'loading' }
-  | { status: 'loaded'; data: Compensation | null }
-  | { status: 'error'; error: unknown }
-
-function CompensationSection({
-  employeeId,
-  employeeName,
+function ChangeStatusForm({
+  employee,
+  onCancel,
+  onSaved,
 }: {
-  employeeId: string
-  employeeName: string
+  employee: Employee
+  onCancel(): void
+  onSaved(employee: Employee): void
 }) {
-  const [state, setState] = useState<CompensationState>({ status: 'idle' })
-  const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({ baseSalary: '', currency: '', effectiveFrom: '' })
+  const [status, setStatus] = useState(employee.status)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<unknown>(null)
-  const [saved, setSaved] = useState<string | null>(null)
-  const issues = fieldIssues(error)
-
-  const path = `/employees/${encodeURIComponent(employeeId)}/compensation`
-
-  async function load() {
-    setState({ status: 'loading' })
-    try {
-      const result = await api<{ compensation: Compensation | null }>(path)
-      setState({ status: 'loaded', data: result.compensation })
-    } catch (e) {
-      setState({ status: 'error', error: e })
-    }
-  }
-
-  const set =
-    (key: 'baseSalary' | 'currency' | 'effectiveFrom') => (event: ChangeEvent<HTMLInputElement>) => {
-      const value = event.target.value
-      setForm((f) => ({ ...f, [key]: value }))
-    }
+  const dirty = status !== employee.status
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    const baseSalary = Number(form.baseSalary)
-    const currency = form.currency.trim().toUpperCase()
-    const ok = window.confirm(
-      `Set compensation for ${employeeName} to ${form.baseSalary || '—'} ${currency || '—'} effective ${form.effectiveFrom || '—'}? This is RESTRICTED data and the change is audited.`,
-    )
-    if (!ok) return
+    if (!dirty) return
+    if (status === 'TERMINATED' || status === 'SUSPENDED') {
+      const question =
+        status === 'TERMINATED'
+          ? `Terminate ${fullName(employee)}? This marks them as no longer employed.`
+          : `Suspend ${fullName(employee)}? They stay suspended until you change the status again.`
+      if (!window.confirm(question)) return
+    }
     setSubmitting(true)
     setError(null)
-    setSaved(null)
     try {
-      await api<{ ok: true }>(path, {
+      const result = await api<{ employee: Employee }>(`/employees/${encodeURIComponent(employee.id)}`, {
         method: 'PUT',
-        body: {
-          baseSalary: form.baseSalary.trim() === '' ? undefined : baseSalary,
-          currency,
-          effectiveFrom: form.effectiveFrom,
-        },
+        body: { status },
       })
-      setSaved(`Compensation saved for ${employeeName}.`)
-      setShowForm(false)
-      setForm({ baseSalary: '', currency: '', effectiveFrom: '' })
-      await load()
+      onSaved(result.employee)
     } catch (e) {
       setError(e)
     } finally {
@@ -1058,113 +967,176 @@ function CompensationSection({
   }
 
   return (
-    <div>
-      <div className="card-header" style={{ marginBottom: 10 }}>
-        <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          Compensation <Badge value="RESTRICTED" />
-        </h3>
-        <div style={{ display: 'flex', gap: 8 }}>
-          {state.status === 'idle' || state.status === 'error' ? (
-            <button type="button" onClick={() => void load()}>
-              Load compensation
-            </button>
-          ) : state.status === 'loaded' ? (
-            <button type="button" onClick={() => void load()}>
-              Refresh
-            </button>
-          ) : null}
-          <button type="button" onClick={() => setShowForm((v) => !v)} disabled={submitting}>
-            {showForm ? 'Cancel' : 'Set compensation'}
+    <form onSubmit={submit} className="card flat">
+      <fieldset disabled={submitting}>
+        <legend>Change status</legend>
+        <Field id="status-select" label="New status">
+          <select id="status-select" value={status} onChange={(e) => setStatus(e.target.value)}>
+            {EMPLOYEE_STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {humanize(s)}
+                {s === employee.status ? ' (current)' : ''}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <SubmitError error={error} />
+        <div className="form-actions">
+          <button
+            type="submit"
+            className={status === 'TERMINATED' || status === 'SUSPENDED' ? 'danger' : 'primary'}
+            disabled={submitting || !dirty}
+          >
+            {submitting ? 'Saving…' : 'Save status'}
+          </button>
+          <button type="button" onClick={onCancel} disabled={submitting}>
+            Cancel
           </button>
         </div>
+      </fieldset>
+    </form>
+  )
+}
+
+// --- Salary (RESTRICTED; loaded only when the disclosure opens) ---------------
+
+function SalarySection({ employeeId, onOpen }: { employeeId: string; onOpen(): void }) {
+  const [open, setOpen] = useState(false)
+  const path = `/employees/${encodeURIComponent(employeeId)}/compensation`
+  const current = useApi<{ compensation: Compensation | null }>(open ? path : null)
+
+  const [form, setForm] = useState({ baseSalary: '', currency: 'USD', effectiveFrom: today() })
+  const [seeded, setSeeded] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<unknown>(null)
+  const [saved, setSaved] = useState<string | null>(null)
+
+  const record = current.data?.compensation ?? null
+
+  // Pre-fill the form once from the current record so a small change is a small edit.
+  useEffect(() => {
+    if (seeded || !current.data) return
+    setSeeded(true)
+    if (record) {
+      setForm({ baseSalary: String(record.baseSalary), currency: record.currency, effectiveFrom: today() })
+    }
+  }, [current.data, record, seeded])
+
+  const currencies = useMemo(() => {
+    const list = [...COMMON_CURRENCIES]
+    for (const code of [record?.currency, form.currency]) {
+      if (code && !list.includes(code)) list.push(code)
+    }
+    return list
+  }, [record, form.currency])
+
+  const set = (key: 'baseSalary' | 'currency' | 'effectiveFrom') => (event: { target: { value: string } }) => {
+    const value = event.target.value
+    setSaved(null)
+    setForm((f) => ({ ...f, [key]: value }))
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    setSubmitting(true)
+    setError(null)
+    setSaved(null)
+    try {
+      await api<{ ok: true }>(path, {
+        method: 'PUT',
+        body: {
+          baseSalary: Number(form.baseSalary),
+          currency: form.currency,
+          effectiveFrom: form.effectiveFrom,
+        },
+      })
+      setSaved('Salary saved.')
+      current.reload()
+    } catch (e) {
+      setError(e)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <details
+      className="more"
+      onToggle={(e) => {
+        const isOpen = (e.target as HTMLDetailsElement).open
+        setOpen(isOpen)
+        if (isOpen) onOpen()
+      }}
+    >
+      <summary>Salary</summary>
+      <div className="card flat">
+        <p className="small-text muted">Only HR administrators can see this.</p>
+        {current.loading ? (
+          <Loading rows={2} label="Loading salary" />
+        ) : current.error ? (
+          <ErrorState error={current.error} />
+        ) : current.data ? (
+          <>
+            {record ? (
+              <Facts
+                items={[
+                  {
+                    label: 'Current salary',
+                    value: `${record.baseSalary.toLocaleString()} ${record.currency}`,
+                  },
+                  { label: 'Since', value: formatDate(record.effectiveFrom) },
+                ]}
+              />
+            ) : (
+              <Empty title="No salary on record" hint="Enter one below to start a record." />
+            )}
+            <form onSubmit={submit}>
+              <fieldset disabled={submitting}>
+                <legend>{record ? 'Update salary' : 'Set salary'}</legend>
+                <div className="form-row">
+                  <Field id="salary-amount" label="Base salary">
+                    <input
+                      id="salary-amount"
+                      type="number"
+                      inputMode="decimal"
+                      min={0}
+                      step="0.01"
+                      value={form.baseSalary}
+                      onChange={set('baseSalary')}
+                      required
+                    />
+                  </Field>
+                  <Field id="salary-currency" label="Currency">
+                    <select id="salary-currency" value={form.currency} onChange={set('currency')}>
+                      {currencies.map((code) => (
+                        <option key={code} value={code}>
+                          {code}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field id="salary-from" label="Effective from">
+                    <input
+                      id="salary-from"
+                      type="date"
+                      value={form.effectiveFrom}
+                      onChange={set('effectiveFrom')}
+                      required
+                    />
+                  </Field>
+                </div>
+                {saved ? <Notice tone="ok">{saved}</Notice> : null}
+                <SubmitError error={error} />
+                <div className="form-actions">
+                  <button type="submit" className="primary" disabled={submitting}>
+                    {submitting ? 'Saving…' : 'Save salary'}
+                  </button>
+                </div>
+              </fieldset>
+            </form>
+          </>
+        ) : null}
       </div>
-
-      <p style={{ margin: '0 0 10px', color: 'var(--text-muted)', fontSize: 12 }}>
-        Salary data is restricted and every read is audited. It is loaded only when you ask for it.
-      </p>
-
-      {saved ? (
-        <div className="notice info" role="status" aria-live="polite">
-          {saved}
-        </div>
-      ) : null}
-
-      {state.status === 'idle' ? (
-        <Empty title="Not loaded" hint="Use “Load compensation” to view the current record." />
-      ) : state.status === 'loading' ? (
-        <Loading rows={2} label="Loading compensation" />
-      ) : state.status === 'error' ? (
-        <ErrorState error={state.error} />
-      ) : state.data === null ? (
-        <Empty title="No compensation on record" hint="No record is effective today." />
-      ) : (
-        <div className="grid kpi">
-          <Detail label="Base salary">
-            <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
-              {state.data.baseSalary.toLocaleString()}
-            </span>
-          </Detail>
-          <Detail label="Currency">
-            <span className="mono">{state.data.currency}</span>
-          </Detail>
-          <Detail label="Effective from">{formatDate(state.data.effectiveFrom)}</Detail>
-        </div>
-      )}
-
-      {showForm ? (
-        <form onSubmit={submit} noValidate style={{ marginTop: 14 }}>
-          <SubmitError error={error} />
-          <div className="form-row">
-            <Field id="comp-baseSalary" label="Base salary" error={issues.baseSalary}>
-              <input
-                id="comp-baseSalary"
-                type="number"
-                inputMode="decimal"
-                min={0}
-                step="0.01"
-                value={form.baseSalary}
-                onChange={set('baseSalary')}
-                required
-                aria-invalid={issues.baseSalary ? true : undefined}
-                aria-describedby={issues.baseSalary ? 'comp-baseSalary-error' : undefined}
-              />
-            </Field>
-            <Field id="comp-currency" label="Currency" error={issues.currency} hint="Three-letter code, e.g. USD">
-              <input
-                id="comp-currency"
-                className="mono"
-                value={form.currency}
-                onChange={set('currency')}
-                required
-                minLength={3}
-                maxLength={3}
-                autoComplete="off"
-                aria-invalid={issues.currency ? true : undefined}
-                aria-describedby={issues.currency ? 'comp-currency-error' : undefined}
-              />
-            </Field>
-            <Field id="comp-effectiveFrom" label="Effective from" error={issues.effectiveFrom}>
-              <input
-                id="comp-effectiveFrom"
-                type="date"
-                value={form.effectiveFrom}
-                onChange={set('effectiveFrom')}
-                required
-                aria-invalid={issues.effectiveFrom ? true : undefined}
-                aria-describedby={issues.effectiveFrom ? 'comp-effectiveFrom-error' : undefined}
-              />
-            </Field>
-          </div>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-            <button type="button" onClick={() => setShowForm(false)} disabled={submitting}>
-              Cancel
-            </button>
-            <button type="submit" className="primary" disabled={submitting}>
-              {submitting ? 'Saving…' : 'Save compensation'}
-            </button>
-          </div>
-        </form>
-      ) : null}
-    </div>
+    </details>
   )
 }

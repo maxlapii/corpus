@@ -8,14 +8,23 @@
  * stale or tampered client state cannot yield data (CLAUDE.md §34).
  */
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchCurrentUser, logout as apiLogout, type CurrentUser } from '@/lib/api'
 
 interface SessionState {
   user: CurrentUser | null
   loading: boolean
   error: unknown
+  /**
+   * Re-fetch the current user. The first load shows the global loading state;
+   * later calls refresh in place so an open page is not unmounted.
+   */
   refresh(): Promise<void>
+  /**
+   * Replace the cached user with one the API just returned (e.g. right after
+   * sign-in). Purely a cache update — it grants nothing.
+   */
+  setUser(user: CurrentUser | null): void
   signOut(): Promise<void>
 }
 
@@ -24,6 +33,7 @@ const SessionContext = createContext<SessionState>({
   loading: true,
   error: null,
   refresh: async () => {},
+  setUser: () => {},
   signOut: async () => {},
 })
 
@@ -31,9 +41,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<unknown>(null)
+  const hasUser = useRef(false)
+  hasUser.current = user !== null
 
   const refresh = useCallback(async () => {
-    setLoading(true)
+    if (!hasUser.current) setLoading(true)
     setError(null)
     try {
       setUser(await fetchCurrentUser())
@@ -55,7 +67,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, [refresh])
 
   const value = useMemo(
-    () => ({ user, loading, error, refresh, signOut }),
+    () => ({ user, loading, error, refresh, setUser, signOut }),
     [user, loading, error, refresh, signOut],
   )
 

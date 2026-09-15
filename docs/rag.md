@@ -777,7 +777,7 @@ when someone asks this", because that answer often is not written down anywhere,
 retrieved passage still has to be summarised by a model before a person can read it.
 
 A **curated answer** is the second retrieval source: a question/answer pair an HR author writes in
-the dashboard (**Knowledge → Bot training**) and publishes to a named audience. It is served
+the dashboard (**Bot answers**) and publishes to a named audience. It is served
 **verbatim, with no model turn at all**.
 
 ### 14.1 Why verbatim matters

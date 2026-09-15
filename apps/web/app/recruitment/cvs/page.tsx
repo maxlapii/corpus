@@ -7,6 +7,10 @@
  * there is no upload here. That keeps one ingestion path with one set of
  * checks, and makes the provenance on every row meaningful.
  *
+ * Layout: a master/detail split — the filtered list on the left, the selected
+ * CV's preview on the right with its actions first, then the file text, then
+ * the job match. Every action reports success or failure inside the preview.
+ *
  * Two things this page is careful about:
  *
  * 1. The CV text is untrusted. It is rendered inside a `<pre>` as a text node,
@@ -14,22 +18,27 @@
  * 2. The match report is advisory. It shows the sentence behind every match so
  *    a person can disagree with it, and nothing here changes an application's
  *    stage — that stays a human decision on the recruitment page.
+ *
+ * Permission checks here only decide which controls are rendered; the API
+ * re-authorises every request through the PolicyGateway.
  */
 
-import { useCallback, useMemo, useState, type CSSProperties, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 import { PageHeader, Shell } from '@/components/shell'
-import { Badge, Card, Empty, ErrorState, Loading, formatDateTime } from '@/components/ui'
-import { useSession } from '@/components/session'
 import {
-  API_BASE,
-  ApiRequestError,
-  CSRF_HEADER,
-  api,
-  can,
-  getCsrfToken,
-  type ApiError,
-  type Page,
-} from '@/lib/api'
+  Badge,
+  Card,
+  Empty,
+  ErrorState,
+  Field,
+  Loading,
+  Notice,
+  Pager,
+  SubmitError,
+  formatDateTime,
+} from '@/components/ui'
+import { useSession } from '@/components/session'
+import { API_BASE, api, can, type Page } from '@/lib/api'
 import { useApi } from '@/lib/use-api'
 
 type ExtractionStatus = 'OK' | 'EMPTY' | 'UNSUPPORTED' | 'FAILED'
@@ -105,52 +114,58 @@ interface JobListItem {
 }
 
 const PAGE_SIZE = 20
+/** How much of a long CV shows before "Show full text". */
+const PREVIEW_CHARS = 1500
+/** With "Needs attention" on, this many most-recent CVs are checked. */
+const ATTENTION_SCAN = 100
 
-const EXTRACTION_LABEL: Record<ExtractionStatus, string> = {
-  OK: 'Text read',
-  EMPTY: 'Needs text',
-  UNSUPPORTED: 'Format not readable',
-  FAILED: 'Could not be read',
+function sourceLabel(source: CvSource): string {
+  switch (source) {
+    case 'TELEGRAM_EXTERNAL':
+      return 'Sent by candidate'
+    case 'TELEGRAM_INTERNAL':
+      return 'Forwarded by staff'
+    default:
+      return 'Uploaded'
+  }
 }
 
-const SOURCE_LABEL: Record<CvSource, string> = {
-  TELEGRAM_EXTERNAL: 'Candidate',
-  TELEGRAM_INTERNAL: 'Forwarded',
-  DASHBOARD: 'Uploaded',
+function sourceTone(source: CvSource): 'info' | 'muted' {
+  return source === 'TELEGRAM_EXTERNAL' ? 'info' : 'muted'
 }
 
-const cvTextStyle: CSSProperties = {
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-word',
-  maxHeight: 420,
-  overflowY: 'auto',
-  background: 'var(--surface-alt)',
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius)',
-  padding: '12px 14px',
-  margin: 0,
-  fontSize: 13,
-  lineHeight: 1.55,
+function hasText(cv: Pick<CvListItem, 'extractionStatus'>): boolean {
+  return cv.extractionStatus === 'OK'
 }
 
-const evidenceStyle: CSSProperties = {
-  borderLeft: '3px solid var(--border)',
-  paddingLeft: 10,
-  margin: '6px 0 0',
-  fontSize: 13,
-  color: 'var(--muted)',
+function needsAttention(cv: Pick<CvListItem, 'extractionStatus' | 'injectionFlagged'>): boolean {
+  return cv.injectionFlagged || !hasText(cv)
 }
 
-function messageOf(error: unknown): string {
-  if (error instanceof ApiRequestError) return error.error.message
-  if (error instanceof Error) return error.message
-  return 'Something went wrong.'
+function TextBadge({ cv }: { cv: Pick<CvListItem, 'extractionStatus' | 'injectionFlagged'> }) {
+  if (cv.injectionFlagged) return <Badge value="Flagged" tone="danger" />
+  if (hasText(cv)) return <Badge value="Ready" tone="ok" />
+  return <Badge value="Needs text" tone="warn" />
 }
 
-function formatBytes(value: number): string {
-  if (value < 1024) return `${value} B`
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
-  return `${(value / (1024 * 1024)).toFixed(1)} MB`
+/** A value that trails `value` by `delay` ms — for search boxes without an Apply button. */
+function useDebounced<T>(value: T, delay = 300): T {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay)
+    return () => clearTimeout(timer)
+  }, [value, delay])
+  return debounced
+}
+
+/** On narrow screens the preview sits below the list; bring it into view when a row is chosen. */
+function useScrollToDetail(ref: RefObject<HTMLElement>, key: string | null) {
+  useEffect(() => {
+    if (!key) return
+    if (typeof window !== 'undefined' && window.innerWidth < 1200) {
+      ref.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+    }
+  }, [ref, key])
 }
 
 export default function CvsPage() {
@@ -159,52 +174,51 @@ export default function CvsPage() {
   const mayManage = can(user, 'candidate.document.manage')
 
   const [search, setSearch] = useState('')
-  const [source, setSource] = useState<CvSource | ''>('')
-  const [extraction, setExtraction] = useState<ExtractionStatus | ''>('')
-  const [flagged, setFlagged] = useState<'' | 'true'>('')
-  const [page, setPage] = useState(0)
+  const query = useDebounced(search.trim())
+  const [attention, setAttention] = useState(false)
+  const [offset, setOffset] = useState(0)
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [jobId, setJobId] = useState('')
-  const [notice, setNotice] = useState<string | null>(null)
-  const [actionError, setActionError] = useState<unknown>(null)
+  const detailRef = useRef<HTMLDivElement>(null)
 
-  const listPath = useMemo(() => {
-    const params = new URLSearchParams({
-      limit: String(PAGE_SIZE),
-      offset: String(page * PAGE_SIZE),
-    })
-    if (search.trim()) params.set('q', search.trim())
-    if (source) params.set('source', source)
-    if (extraction) params.set('extraction', extraction)
-    if (flagged) params.set('flagged', flagged)
-    return `/cvs?${params.toString()}`
-  }, [search, source, extraction, flagged, page])
+  // A changed filter is a new list: back to the first page, nothing selected.
+  useEffect(() => {
+    setOffset(0)
+    setSelectedId(null)
+  }, [query, attention])
+
+  // "Needs attention" means flagged OR without text. The list route filters
+  // with AND and takes one extraction status at a time, so that union cannot
+  // be asked for directly; instead the most recent files are fetched and
+  // narrowed here, without paging.
+  const params = new URLSearchParams({
+    limit: String(attention ? ATTENTION_SCAN : PAGE_SIZE),
+    offset: String(attention ? 0 : offset),
+  })
+  if (query) params.set('q', query)
+  const listPath = `/cvs?${params.toString()}`
 
   const cvs = useApi<Page<CvListItem> & { facets: CvFacets }>(mayRead ? listPath : null)
-  const detail = useApi<CvDetail>(mayRead && selectedId ? `/cvs/${selectedId}` : null)
   const jobs = useApi<Page<JobListItem>>(mayRead ? '/jobs?limit=100&offset=0' : null)
-  const match = useApi<MatchResponse>(
-    mayRead && selectedId && jobId ? `/cvs/${selectedId}/match/${jobId}` : null,
-  )
 
-  const reload = useCallback(() => {
-    cvs.reload()
-    detail.reload()
-  }, [cvs, detail])
+  useScrollToDetail(detailRef, selectedId)
 
   if (!mayRead) {
     return (
       <Shell>
-        <PageHeader title="CVs" description="Candidate CVs and job matching." />
+        <PageHeader title="CVs" />
         <Card>
-          <Empty
-            title="You do not have access to candidate CVs"
-            hint="This area needs the candidate.document.read permission. Ask an HR administrator."
-          />
+          <Empty title="You do not have access to candidate CVs" hint="Ask an HR administrator." />
         </Card>
       </Shell>
     )
   }
+
+  const filtered = search !== '' || attention
+  const items = cvs.data ? (attention ? cvs.data.items.filter(needsAttention) : cvs.data.items) : []
+  const withoutText =
+    (cvs.data?.facets.byExtraction.EMPTY ?? 0) +
+    (cvs.data?.facets.byExtraction.UNSUPPORTED ?? 0) +
+    (cvs.data?.facets.byExtraction.FAILED ?? 0)
 
   return (
     <Shell>
@@ -213,477 +227,385 @@ export default function CvsPage() {
         description="CVs candidates sent to the recruitment bot, or that staff forwarded on the employee bot."
       />
 
-      {notice ? (
-        <div className="notice ok" role="status" style={{ marginBottom: 14 }}>
-          {notice}
-        </div>
-      ) : null}
-      {actionError ? (
-        actionError instanceof ApiRequestError && actionError.isForbidden ? (
-          <ErrorState error={actionError} />
-        ) : (
-          <div className="notice error" role="alert" style={{ marginBottom: 14 }}>
-            {messageOf(actionError)}
-          </div>
-        )
-      ) : null}
-
-      <Card title="Received CVs">
-        <form
-          className="toolbar"
-          aria-label="Search CVs"
-          onSubmit={(e) => {
-            e.preventDefault()
-            setPage(0)
-            cvs.reload()
-          }}
-        >
-          <label htmlFor="cv-search" className="visually-hidden">
-            Search
-          </label>
-          <input
-            id="cv-search"
-            value={search}
-            placeholder="Candidate name, e-mail or filename"
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <label htmlFor="cv-source" className="visually-hidden">
-            Source
-          </label>
-          <select
-            id="cv-source"
-            value={source}
-            onChange={(e) => {
-              setSource(e.target.value as CvSource | '')
-              setPage(0)
-            }}
-          >
-            <option value="">Any source</option>
-            <option value="TELEGRAM_EXTERNAL">From the candidate</option>
-            <option value="TELEGRAM_INTERNAL">Forwarded by staff</option>
-            <option value="DASHBOARD">Uploaded (before bot intake)</option>
-          </select>
-
-          <label htmlFor="cv-extraction" className="visually-hidden">
-            Text status
-          </label>
-          <select
-            id="cv-extraction"
-            value={extraction}
-            onChange={(e) => {
-              setExtraction(e.target.value as ExtractionStatus | '')
-              setPage(0)
-            }}
-          >
-            <option value="">Any text status</option>
-            <option value="OK">Text read — matchable</option>
-            <option value="EMPTY">Needs text entering</option>
-            <option value="UNSUPPORTED">Format not readable</option>
-            <option value="FAILED">Could not be read</option>
-          </select>
-
-          <label htmlFor="cv-flagged" className="visually-hidden">
-            Flagged
-          </label>
-          <select
-            id="cv-flagged"
-            value={flagged}
-            onChange={(e) => {
-              setFlagged(e.target.value as '' | 'true')
-              setPage(0)
-            }}
-          >
-            <option value="">Flagged or not</option>
-            <option value="true">Flagged only</option>
-          </select>
-
-          <button type="submit">Apply</button>
-          {search || source || extraction || flagged ? (
-            <button
-              type="button"
-              onClick={() => {
-                setSearch('')
-                setSource('')
-                setExtraction('')
-                setFlagged('')
-                setPage(0)
-              }}
-            >
-              Clear
-            </button>
-          ) : null}
-        </form>
-
-        {cvs.data?.facets ? (
-          <p className="hint" style={{ marginTop: 0 }}>
-            {cvs.data.facets.total} CV(s) in total ·{' '}
-            {cvs.data.facets.bySource.TELEGRAM_EXTERNAL ?? 0} from candidates ·{' '}
-            {cvs.data.facets.bySource.TELEGRAM_INTERNAL ?? 0} forwarded ·{' '}
-            {cvs.data.facets.byExtraction.EMPTY ?? 0} awaiting text ·{' '}
-            {cvs.data.facets.flagged} flagged
-          </p>
-        ) : null}
-
-        {cvs.loading ? (
-          <Loading rows={4} label="Loading CVs" />
-        ) : cvs.error ? (
-          <ErrorState error={cvs.error} />
-        ) : !cvs.data || cvs.data.items.length === 0 ? (
-          <Empty
-            title="No CVs yet"
-            hint="Candidates send a CV to the recruitment bot with /cv after applying; staff forward one to the employee bot with /cv and the candidate's e-mail."
-          />
-        ) : (
-          <>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Candidate</th>
-                    <th>File</th>
-                    <th>Size</th>
-                    <th>Text</th>
-                    <th>Source</th>
-                    <th>Received</th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {cvs.data.items.map((cv) => (
-                    <tr key={cv.id}>
-                      <td>
-                        <div>{cv.candidateName}</div>
-                        <div className="hint">{cv.candidateEmail}</div>
-                      </td>
-                      <td>{cv.filename}</td>
-                      <td>{formatBytes(cv.byteSize)}</td>
-                      <td>
-                        <Badge value={EXTRACTION_LABEL[cv.extractionStatus]} />
-                        {cv.injectionFlagged ? <Badge value="FLAGGED" /> : null}
-                      </td>
-                      <td>
-                        <Badge value={SOURCE_LABEL[cv.source] ?? cv.source} />
-                      </td>
-                      <td>{formatDateTime(cv.uploadedAt)}</td>
-                      <td>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedId(cv.id)
-                            setNotice(null)
-                            setActionError(null)
-                          }}
-                        >
-                          Open
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="toolbar" style={{ marginTop: 12, marginBottom: 0 }}>
-              <button type="button" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
-                Previous
-              </button>
-              <span className="hint">
-                {cvs.data.total} CV(s) — page {page + 1}
-              </span>
+      <div className="split">
+        <Card title="Received CVs">
+          <div className="toolbar">
+            <label htmlFor="cv-search" className="visually-hidden">
+              Search
+            </label>
+            <input
+              id="cv-search"
+              type="search"
+              value={search}
+              maxLength={120}
+              placeholder="Candidate name, e-mail or file name"
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <label className="check" htmlFor="cv-attention">
+              <input
+                id="cv-attention"
+                type="checkbox"
+                checked={attention}
+                onChange={(e) => setAttention(e.target.checked)}
+              />
+              Needs attention
+            </label>
+            {filtered ? (
               <button
                 type="button"
-                disabled={(page + 1) * PAGE_SIZE >= cvs.data.total}
-                onClick={() => setPage((p) => p + 1)}
+                onClick={() => {
+                  setSearch('')
+                  setAttention(false)
+                }}
               >
-                Next
+                Clear
               </button>
-            </div>
-          </>
-        )}
-      </Card>
-
-      {selectedId ? (
-        <>
-          <PreviewCard
-            state={detail}
-            mayManage={mayManage}
-            onChanged={(message) => {
-              setNotice(message)
-              setActionError(null)
-              reload()
-            }}
-            onError={setActionError}
-            onDeleted={() => {
-              setSelectedId(null)
-              setJobId('')
-              setNotice('CV deleted.')
-              reload()
-            }}
-          />
-
-          <Card title="Match against a job">
-            <p className="hint" style={{ marginTop: 0 }}>
-              A keyword match over the CV text — advisory only, and it changes nothing about the
-              application.
-            </p>
-            <div className="field">
-              <label htmlFor="cv-job">Job</label>
-              <select id="cv-job" value={jobId} onChange={(e) => setJobId(e.target.value)}>
-                <option value="">Choose a job…</option>
-                {(jobs.data?.items ?? []).map((job) => (
-                  <option key={job.id} value={job.id}>
-                    {job.jobCode} — {job.title}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {!jobId ? null : match.loading ? (
-              <Loading rows={3} label="Matching" />
-            ) : match.error ? (
-              <ErrorState error={match.error} />
-            ) : match.data ? (
-              <MatchReport data={match.data} />
             ) : null}
-          </Card>
-        </>
-      ) : null}
+          </div>
+
+          {withoutText > 0 ? (
+            <p className="hint">
+              {withoutText.toLocaleString()} need text added
+            </p>
+          ) : null}
+
+          {cvs.loading ? (
+            <Loading rows={4} label="Loading CVs" />
+          ) : cvs.error ? (
+            <ErrorState error={cvs.error} />
+          ) : !cvs.data || items.length === 0 ? (
+            <Empty
+              title={filtered ? 'No CVs match' : 'No CVs yet'}
+              hint={
+                filtered
+                  ? 'Try clearing the search or the filter.'
+                  : 'Candidates send a CV to the recruitment bot after applying; staff forward one to the employee bot.'
+              }
+            />
+          ) : (
+            <>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">Candidate</th>
+                      <th scope="col">Source</th>
+                      <th scope="col">Text</th>
+                      <th scope="col">Received</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((cv) => (
+                      <tr
+                        key={cv.id}
+                        className="selectable"
+                        aria-selected={cv.id === selectedId}
+                        onClick={() => setSelectedId(cv.id)}
+                      >
+                        <td>
+                          <button type="button" className="link" onClick={() => setSelectedId(cv.id)}>
+                            {cv.candidateName}
+                          </button>
+                          <div className="small-text muted">{cv.filename}</div>
+                        </td>
+                        <td>
+                          <Badge value={sourceLabel(cv.source)} tone={sourceTone(cv.source)} />
+                        </td>
+                        <td>
+                          <TextBadge cv={cv} />
+                        </td>
+                        <td>{formatDateTime(cv.uploadedAt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {attention ? (
+                cvs.data.total > ATTENTION_SCAN ? (
+                  <p className="hint">
+                    Checked the {ATTENTION_SCAN} most recent CVs. Narrow the search to check older ones.
+                  </p>
+                ) : null
+              ) : (
+                <Pager page={cvs.data} onChange={setOffset} />
+              )}
+            </>
+          )}
+        </Card>
+
+        <div ref={detailRef}>
+          {selectedId ? (
+            <PreviewPanel
+              key={selectedId}
+              cvId={selectedId}
+              mayManage={mayManage}
+              jobs={jobs.data?.items ?? []}
+              onChanged={() => cvs.reload()}
+              onDeleted={() => {
+                setSelectedId(null)
+                cvs.reload()
+              }}
+            />
+          ) : (
+            <Card title="CV">
+              <Empty title="Select a CV" hint="Choose one from the list to read it or match it against a job." />
+            </Card>
+          )}
+        </div>
+      </div>
     </Shell>
   )
 }
 
-function PreviewCard({
-  state,
+function PreviewPanel({
+  cvId,
   mayManage,
+  jobs,
   onChanged,
-  onError,
   onDeleted,
 }: {
-  state: ReturnType<typeof useApi<CvDetail>>
+  cvId: string
   mayManage: boolean
-  onChanged(message: string): void
-  onError(error: unknown): void
+  jobs: JobListItem[]
+  onChanged(): void
   onDeleted(): void
 }) {
+  const detail = useApi<CvDetail>(`/cvs/${encodeURIComponent(cvId)}`)
+  const [jobId, setJobId] = useState('')
+  const match = useApi<MatchResponse>(jobId ? `/cvs/${encodeURIComponent(cvId)}/match/${encodeURIComponent(jobId)}` : null)
+
   const [pasted, setPasted] = useState('')
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<unknown>(null)
+  const [done, setDone] = useState<string | null>(null)
+  const [wide, setWide] = useState(false)
 
-  if (state.loading) {
+  // The text box only gets a bounded height beside the list; stacked on a
+  // narrow screen it would become a scroll box inside the page's scroll.
+  useEffect(() => {
+    const update = () => setWide(window.innerWidth >= 1200)
+    update()
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [])
+
+  if (detail.loading) {
     return (
       <Card title="CV">
         <Loading rows={4} label="Loading CV" />
       </Card>
     )
   }
-  if (state.error) {
+  if (detail.error) {
     return (
       <Card title="CV">
-        <ErrorState error={state.error} />
+        <ErrorState error={detail.error} />
       </Card>
     )
   }
-  if (!state.data) return null
+  if (!detail.data) return null
 
-  const { document, candidate } = state.data
-  const needsText = document.extractionStatus !== 'OK' || !document.extractedText
+  const { document, candidate } = detail.data
+  const text = document.extractedText
+  const missingText = !hasText(document) || !text
 
   async function savePastedText() {
     setBusy(true)
+    setError(null)
+    setDone(null)
     try {
-      await api(`/cvs/${document.id}/text`, { method: 'PUT', body: { text: pasted } })
+      await api(`/cvs/${encodeURIComponent(document.id)}/text`, { method: 'PUT', body: { text: pasted } })
       setPasted('')
-      onChanged('CV text saved.')
+      setDone('Text saved. The CV can now be matched against a job.')
+      detail.reload()
+      onChanged()
     } catch (e) {
-      onError(e)
+      setError(e)
     } finally {
       setBusy(false)
     }
   }
 
   async function remove() {
+    if (!window.confirm(`Delete ${document.filename}? The file is removed for good.`)) return
     setBusy(true)
+    setError(null)
+    setDone(null)
     try {
-      await api(`/cvs/${document.id}`, { method: 'DELETE' })
+      await api(`/cvs/${encodeURIComponent(document.id)}`, { method: 'DELETE' })
       onDeleted()
     } catch (e) {
-      onError(e)
-    } finally {
+      setError(e)
       setBusy(false)
     }
   }
 
   return (
-    <Card title={document.filename}>
-      <div className="toolbar" style={{ marginTop: 0 }}>
-        <Badge value={EXTRACTION_LABEL[document.extractionStatus]} />
-        <Badge value={SOURCE_LABEL[document.source] ?? document.source} />
-        <span className="hint">
-          {candidate ? `${candidate.name} · ${candidate.email} · ` : ''}
-          {formatBytes(document.byteSize)} · {formatDateTime(document.uploadedAt)}
-        </span>
-        <a
-          href={`${API_BASE}/cvs/${document.id}/download`}
-          rel="noreferrer"
-          className="hint"
-          style={{ marginLeft: 'auto' }}
-        >
+    <Card title={document.filename} actions={<TextBadge cv={document} />}>
+      <SubmitError error={error} />
+      {done ? <Notice tone="ok">{done}</Notice> : null}
+
+      <div className="actions">
+        <a href={`${API_BASE}/cvs/${encodeURIComponent(document.id)}/download`} target="_blank" rel="noreferrer">
           Download original
         </a>
         {mayManage ? (
-          <button type="button" disabled={busy} onClick={remove}>
+          <button type="button" className="danger small" disabled={busy} onClick={remove} style={{ marginLeft: 'auto' }}>
             Delete
           </button>
         ) : null}
       </div>
 
+      <p className="small-text muted">
+        {candidate ? `${candidate.name} · ${candidate.email} · ` : ''}
+        {sourceLabel(document.source)} · {formatDateTime(document.uploadedAt)}
+      </p>
+
       {document.injectionFlagged ? (
-        <div className="notice warn" style={{ fontSize: 13 }}>
-          This CV contains instruction-like text. It is stored and shown as plain data and is never
-          given to the assistant as an instruction — but read it with that in mind.
-        </div>
+        <Notice tone="warn">
+          This file contains text that looks like instructions to a system. Read it with care.
+        </Notice>
       ) : null}
 
-      {document.extractionWarnings.length > 0 ? (
-        <div className="notice info" style={{ fontSize: 13 }}>
-          <ul style={{ margin: 0, paddingLeft: 18 }}>
-            {document.extractionWarnings.map((warning) => (
-              <li key={warning}>{warning}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-
-      {document.extractedText ? (
-        <pre style={cvTextStyle}>{document.extractedText}</pre>
+      {text ? (
+        <CvText text={text} wide={wide} />
       ) : (
         <Empty
           title="No text could be read from this file"
-          hint="Download the original to read it. A scanned PDF has no text layer to extract."
+          hint="Download the original to read it. A scanned PDF has no text to pick up."
         />
       )}
 
-      {needsText && mayManage ? (
-        <div className="field" style={{ marginTop: 14 }}>
-          <label htmlFor="cv-paste">Paste the text by hand</label>
-          <textarea
+      {missingText && mayManage ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            void savePastedText()
+          }}
+        >
+          <Field
             id="cv-paste"
-            rows={5}
-            value={pasted}
-            placeholder="Paste the CV text here so it can be matched against a job."
-            onChange={(e) => setPasted(e.target.value)}
-          />
-          <div className="toolbar" style={{ marginBottom: 0 }}>
-            <button type="button" disabled={busy || pasted.trim().length < 20} onClick={savePastedText}>
-              Save text
+            label="This CV could not be read automatically — paste its text"
+            hint="At least 20 characters. Once saved, the CV can be matched against a job."
+          >
+            <textarea
+              id="cv-paste"
+              rows={6}
+              value={pasted}
+              placeholder="Paste the CV text here"
+              onChange={(e) => {
+                setDone(null)
+                setPasted(e.target.value)
+              }}
+            />
+          </Field>
+          <div className="form-actions">
+            <button type="submit" className="primary" disabled={busy || pasted.trim().length < 20}>
+              {busy ? 'Saving…' : 'Save text'}
             </button>
           </div>
-        </div>
+        </form>
       ) : null}
+
+      <details className="more" open>
+        <summary>Match against a job</summary>
+        <Field id="cv-job" label="Job">
+          <select id="cv-job" value={jobId} onChange={(e) => setJobId(e.target.value)}>
+            <option value="">Choose a job</option>
+            {jobs.map((job) => (
+              <option key={job.id} value={job.id}>
+                {job.title}
+              </option>
+            ))}
+          </select>
+        </Field>
+        {!jobId ? null : match.loading ? (
+          <Loading rows={3} label="Matching" />
+        ) : match.error ? (
+          <ErrorState error={match.error} />
+        ) : match.data ? (
+          <MatchReport data={match.data} />
+        ) : null}
+      </details>
     </Card>
+  )
+}
+
+/** The CV text as a text node. Long text is folded behind a disclosure so the page stays scrollable on a phone. */
+function CvText({ text, wide }: { text: string; wide: boolean }) {
+  if (wide) {
+    return (
+      <pre className="plain small-text" style={{ maxHeight: 420, overflowY: 'auto' }}>
+        {text}
+      </pre>
+    )
+  }
+  if (text.length <= PREVIEW_CHARS) {
+    return <pre className="plain small-text">{text}</pre>
+  }
+  return (
+    <>
+      <pre className="plain small-text">{text.slice(0, PREVIEW_CHARS)}…</pre>
+      <details className="more">
+        <summary>Show full text</summary>
+        <pre className="plain small-text">{text}</pre>
+      </details>
+    </>
   )
 }
 
 function MatchReport({ data }: { data: MatchResponse }) {
   const { report } = data
-  const mandatoryGap = report.score.mandatoryTotal - report.score.mandatoryMet
+  const { score } = report
+  const years = report.facts.yearsOfExperience
 
   return (
-    <div style={{ marginTop: 12 }}>
-      <div className="notice info" style={{ fontSize: 13 }}>
-        {data.advisory}
-      </div>
+    <div>
+      <p>
+        <strong>
+          Meets {score.mandatoryMet} of {score.mandatoryTotal} must-haves, {score.optionalMet} of{' '}
+          {score.optionalTotal} nice-to-haves.
+        </strong>
+        {years !== null ? ` The CV states ${years} years of experience.` : ''}
+        {report.meetsExperienceMinimum === false ? ' That is below the minimum the job asks for.' : ''}
+      </p>
+      <p className="small-text muted">
+        {report.caveats[0] ??
+          'This is a word match over the CV text, not a judgement of the person — read the evidence.'}
+      </p>
 
-      <div className="toolbar">
-        <Badge value={`${report.score.percent}% of weighted requirements`} />
-        <Badge
-          value={`Must-have ${report.score.mandatoryMet}/${report.score.mandatoryTotal}`}
-        />
-        <Badge value={`Nice-to-have ${report.score.optionalMet}/${report.score.optionalTotal}`} />
-        {report.facts.yearsOfExperience !== null ? (
-          <Badge value={`${report.facts.yearsOfExperience} years stated`} />
-        ) : null}
-        {report.meetsExperienceMinimum === false ? <Badge value="Below stated minimum" /> : null}
-      </div>
-
-      {report.caveats.length > 0 ? (
-        <div className="notice warn" style={{ fontSize: 13 }}>
-          <ul style={{ margin: 0, paddingLeft: 18 }}>
-            {report.caveats.map((caveat) => (
-              <li key={caveat}>{caveat}</li>
-            ))}
-          </ul>
+      {report.requirements.length === 0 ? (
+        <Empty title="This job has no requirements yet" hint="Add requirements to the job to match against." />
+      ) : (
+        <div className="rows">
+          {report.requirements.map((requirement) => (
+            <div className="row-card" key={requirement.requirementId}>
+              <div className="row-head">
+                <strong>{requirement.description}</strong>
+                <span className="actions">
+                  <Badge
+                    value={requirement.mandatory ? 'Must have' : 'Nice to have'}
+                    tone={requirement.mandatory ? 'info' : 'muted'}
+                  />
+                  <Badge
+                    value={requirement.matched ? 'Found' : 'Not found'}
+                    tone={requirement.matched ? 'ok' : 'danger'}
+                  />
+                </span>
+              </div>
+              {requirement.evidence.length > 0 ? (
+                requirement.evidence.map((line, i) => (
+                  <p key={i} className="small-text muted">
+                    {line}
+                  </p>
+                ))
+              ) : requirement.missingTerms.length > 0 ? (
+                <p className="small-text muted">Not found: {requirement.missingTerms.join(', ')}</p>
+              ) : null}
+            </div>
+          ))}
         </div>
-      ) : null}
-
-      {mandatoryGap > 0 ? (
-        <p className="hint">
-          {mandatoryGap} must-have requirement(s) were not found in the CV text. That is a prompt to
-          read it, not a verdict — wording varies, and the matcher only sees words.
-        </p>
-      ) : null}
-
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Requirement</th>
-              <th>Type</th>
-              <th>Need</th>
-              <th>Found</th>
-              <th>Evidence from the CV</th>
-            </tr>
-          </thead>
-          <tbody>
-            {report.requirements.map((requirement) => (
-              <tr key={requirement.requirementId}>
-                <td>{requirement.description}</td>
-                <td>
-                  <Badge value={requirement.requirementType} />
-                </td>
-                <td>
-                  <Badge value={requirement.mandatory ? 'MUST' : 'NICE'} />
-                </td>
-                <td>
-                  <Badge value={requirement.matched ? 'YES' : 'NO'} />
-                </td>
-                <td>
-                  {requirement.evidence.length > 0 ? (
-                    requirement.evidence.map((line, i) => (
-                      <p key={i} style={evidenceStyle}>
-                        {line}
-                      </p>
-                    ))
-                  ) : (
-                    <span className="hint">
-                      {requirement.missingTerms.length > 0
-                        ? `Not found: ${requirement.missingTerms.join(', ')}`
-                        : '—'}
-                    </span>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <Card title="Details read from the CV">
-        <p className="hint" style={{ marginTop: 0 }}>
-          Extracted literally from the text. Nothing is inferred about the person.
-        </p>
-        <dl style={{ margin: 0, display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 16px' }}>
-          <dt className="hint">Years stated</dt>
-          <dd style={{ margin: 0 }}>{report.facts.yearsOfExperience ?? '—'}</dd>
-          <dt className="hint">E-mail</dt>
-          <dd style={{ margin: 0 }}>{report.facts.emails.join(', ') || '—'}</dd>
-          <dt className="hint">Phone</dt>
-          <dd style={{ margin: 0 }}>{report.facts.phones.join(', ') || '—'}</dd>
-          <dt className="hint">Links</dt>
-          <dd style={{ margin: 0 }}>{report.facts.links.join(', ') || '—'}</dd>
-          <dt className="hint">Education signals</dt>
-          <dd style={{ margin: 0 }}>{report.facts.education.join(', ') || '—'}</dd>
-        </dl>
-      </Card>
+      )}
     </div>
   )
 }

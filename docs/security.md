@@ -121,7 +121,7 @@ The invariant is exercised end to end by `tests/security/acceptance.test.ts` (th
                  Response filter (AI answers only) ──► user
 ```
 
-The dashboard chat (`apps/api/src/routes/assistant.ts`) and both bots use the same orchestrator, registry and gateway; there is no second, weaker path to the model.
+The `/assistant/ask` route (`apps/api/src/routes/assistant.ts`, exercised by the security suites; the dashboard has no chat page) and both bots use the same orchestrator, registry and gateway; there is no second, weaker path to the model.
 
 ---
 
@@ -405,7 +405,7 @@ Proof: `tests/integration/rag-permission-filtering.test.ts` (per-role ceilings, 
 
 ## Curated bot answers
 
-Curated answers (**Knowledge → Bot training**) are the one knowledge path reachable from the EXTERNAL zone, and the one served **verbatim with no model turn**. There is no summarisation step in between, so retrieval is the whole control.
+Curated answers (**Bot answers**) are the one knowledge path reachable from the EXTERNAL zone, and the one served **verbatim with no model turn**. There is no summarisation step in between, so retrieval is the whole control.
 
 Three axes, all filtered in SQL (`KnowledgeAnswerRepository.search()`):
 

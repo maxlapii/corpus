@@ -350,6 +350,9 @@ jobRoutes.get('/:id', async (c) => {
   const loaded = await orNotFound(Promise.resolve(job), 'job')
   return c.json({
     job: loaded,
+    // Whether the salary range is shown on the public listing; the entity
+    // omits it, and the dashboard needs it to render the current setting.
+    salaryPublic: await container.repos.jobs.isSalaryPublic(scope, loaded.id),
     requirements: await container.repos.jobRequirements.listForJob(scope, loaded.id),
   })
 })
